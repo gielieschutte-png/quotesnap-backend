@@ -4,11 +4,9 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
-
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -16,13 +14,16 @@ export default async function handler(req, res) {
   try {
     const { webhookUrl, event, quoteData } = req.body;
 
+    console.log('📥 Webhook request received:', { webhookUrl, event, quoteData });
+
     if (!webhookUrl || !event || !quoteData) {
+      console.error('❌ Missing fields:', { webhookUrl, event, quoteData });
       return res.status(400).json({ error: 'Missing required fields: webhookUrl, event, quoteData' });
     }
 
     // Prepare webhook payload
     const payload = {
-      event: event, // "quote.created", "quote.sent", "quote.accepted"
+      event: event,
       quote_id: quoteData.quote_id,
       quote_number: quoteData.quote_number,
       client_name: quoteData.client_name,
@@ -32,32 +33,48 @@ export default async function handler(req, res) {
       timestamp: new Date().toISOString()
     };
 
-    // Fire webhook to external URL (e.g., GoHighLevel)
+    console.log('🚀 Firing webhook to:', webhookUrl);
+    console.log('📦 Payload:', JSON.stringify(payload));
+
+    // Proper timeout using AbortController
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     const webhookResponse = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      timeout: 10000 // 10 second timeout
+      signal: controller.signal
     });
 
-    const responseText = await webhookResponse.text();
+    clearTimeout(timeoutId);
 
-    console.log(`✅ Webhook fired (${event}):`, webhookUrl, 'Status:', webhookResponse.status);
+    const responseText = await webhookResponse.text();
+    console.log(`✅ Webhook fired (${event}) - Status: ${webhookResponse.status} - Response: ${responseText}`);
 
     return res.status(200).json({ 
       success: true, 
       message: 'Webhook fired successfully',
       webhookStatus: webhookResponse.status,
+      webhookResponse: responseText,
       event: event
     });
+
   } catch (error) {
-    console.error('❌ Webhook error:', error);
-    // Don't fail if webhook fails - it's not critical
+    if (error.name === 'AbortError') {
+      console.error('⏱️ Webhook timed out after 10 seconds');
+      return res.status(200).json({ 
+        success: false, 
+        message: 'Webhook timed out',
+        note: 'Non-critical - quote action was still completed'
+      });
+    }
+    console.error('❌ Webhook error:', error.message);
     return res.status(200).json({ 
       success: false, 
       message: 'Webhook firing failed',
       details: error.message,
-      note: 'This is non-critical - quote was still created'
+      note: 'Non-critical - quote action was still completed'
     });
   }
 }
