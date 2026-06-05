@@ -1,4 +1,4 @@
-// api/fire-webhook.js - Vercel Serverless Function
+//fire-webhook.js - Vercel Serverless Function
 export default async function handler(req, res) {
   // Handle CORS preflight
   res.setHeader('Access-Control-Allow-Origin', '*');
