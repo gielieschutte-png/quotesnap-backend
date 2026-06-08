@@ -15,7 +15,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { to, quote_number, client_name, total, pdfBase64, doc_label, subject, body_intro, site_photos } = req.body;
+    const { to, quote_number, client_name, total, pdfBase64, doc_label, subject, site_photos } = req.body;
 
     // Validate inputs
     if (!to || !quote_number || !pdfBase64) {
@@ -37,42 +37,58 @@ export default async function handler(req, res) {
       }
     ];
 
-    // Fetch and attach site photos if provided
+    // Attach site photos — supports both base64 objects AND plain URLs
     if (site_photos && Array.isArray(site_photos) && site_photos.length > 0) {
       console.log(`📸 Attaching ${site_photos.length} site photo(s)...`);
-      
+
       for (let i = 0; i < site_photos.length; i++) {
-        const photoUrl = site_photos[i];
-        if (!photoUrl) continue;
+        const photo = site_photos[i];
+        if (!photo) continue;
 
         try {
-          const photoResponse = await fetch(photoUrl);
-          if (!photoResponse.ok) {
-            console.warn(`⚠️ Could not fetch photo ${i + 1}: ${photoUrl}`);
-            continue;
+          // If Base44 sent base64 objects: { base64, mimeType, filename }
+          if (typeof photo === 'object' && photo.base64) {
+            attachments.push({
+              filename: photo.filename || `site-photo-${i + 1}.jpg`,
+              content: photo.base64,
+              contentType: photo.mimeType || 'image/jpeg'
+            });
+            console.log(`✅ Photo ${i + 1} attached from base64 object`);
+
+          // If Base44 sent plain URL strings — try to fetch them
+          } else if (typeof photo === 'string' && photo.startsWith('http')) {
+            const photoResponse = await fetch(photo);
+            if (!photoResponse.ok) {
+              console.warn(`⚠️ Could not fetch photo ${i + 1}: ${photo} — Status: ${photoResponse.status}`);
+              continue;
+            }
+
+            const photoBuffer = await photoResponse.arrayBuffer();
+            const photoBase64 = Buffer.from(photoBuffer).toString('base64');
+
+            const urlParts = photo.split('?')[0];
+            const ext = urlParts.split('.').pop()?.toLowerCase() || 'jpg';
+            const mimeType = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
+
+            attachments.push({
+              filename: `site-photo-${i + 1}.${ext}`,
+              content: photoBase64,
+              contentType: mimeType
+            });
+            console.log(`✅ Photo ${i + 1} attached from URL`);
+
+          } else {
+            console.warn(`⚠️ Photo ${i + 1} has unrecognised format:`, typeof photo, photo);
           }
 
-          const photoBuffer = await photoResponse.arrayBuffer();
-          const photoBase64 = Buffer.from(photoBuffer).toString('base64');
-
-          // Detect file extension from URL
-          const urlParts = photoUrl.split('?')[0]; // remove query params
-          const ext = urlParts.split('.').pop()?.toLowerCase() || 'jpg';
-          const mimeType = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
-
-          attachments.push({
-            filename: `site-photo-${i + 1}.${ext}`,
-            content: photoBase64,
-            contentType: mimeType
-          });
-
-          console.log(`✅ Photo ${i + 1} attached: site-photo-${i + 1}.${ext}`);
         } catch (photoError) {
           console.warn(`⚠️ Failed to attach photo ${i + 1}:`, photoError.message);
           // Continue — don't fail the whole email if one photo fails
         }
       }
     }
+
+    const photosAttached = attachments.length - 1;
 
     // Send email via Resend
     const response = await resend.emails.send({
@@ -84,19 +100,19 @@ export default async function handler(req, res) {
         <p>Hi ${client_name},</p>
         <p>Please find your ${label.toLowerCase()} <strong>${quote_number}</strong> attached.</p>
         <p><strong>Total: R${total}</strong></p>
-        ${site_photos && site_photos.length > 0 ? `<p>Site photos (${site_photos.length}) are also attached for your reference.</p>` : ''}
+        ${photosAttached > 0 ? `<p>Site photos (${photosAttached}) are also attached for your reference.</p>` : ''}
         <p>Please let us know if you have any questions.</p>
         <p>Best regards,<br>MZS Lead Gen</p>
       `,
       attachments: attachments
     });
 
-    console.log(`✅ ${label} email sent successfully:`, response.id);
+    console.log(`✅ ${label} email sent — emailId: ${response.id} — photos attached: ${photosAttached}`);
     return res.status(200).json({
       success: true,
       message: `${label} email sent successfully`,
       emailId: response.id,
-      photosAttached: attachments.length - 1
+      photosAttached: photosAttached
     });
 
   } catch (error) {
