@@ -21,8 +21,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing required fields: webhookUrl, event, quoteData' });
     }
 
-    // Split client name into first and last name for GHL
-    const nameParts = (quoteData.client_name || '').trim().split(' ');
+    // client_contact = person's full name (e.g. "John Smith") → split into first/last for GHL
+    // client_name = business/company name (e.g. "Optic Cleaning Co") → goes to company_name in GHL
+    const nameParts = (quoteData.client_contact || '').trim().split(' ');
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
 
@@ -38,13 +39,18 @@ export default async function handler(req, res) {
       event: event,
       timestamp: new Date().toISOString(),
 
-      // Contact fields (split for GHL)
+      // Contact person fields (split for GHL first/last name)
       first_name: firstName,
       last_name: lastName,
-      client_name: quoteData.client_name || '',
+      full_name: quoteData.client_contact || '',
+
+      // Company/business name (the "Client" field in QuoteSnap)
+      company_name: quoteData.client_name || '',
+
+      // Contact details
       client_email: quoteData.client_email || '',
       client_phone: quoteData.client_phone || '',
-      client_contact: quoteData.client_contact || '',
+      vat_number: quoteData.vat_number || '',
 
       // Quote / Invoice details
       quote_id: quoteData.quote_id || '',
@@ -55,7 +61,6 @@ export default async function handler(req, res) {
       valid_until: quoteData.valid_until || '',
       job_reference: quoteData.job_reference || '',
       job_address: quoteData.job_address || '',
-      vat_number: quoteData.vat_number || '',
 
       // Financial fields
       subtotal: quoteData.subtotal || 0,
@@ -71,7 +76,7 @@ export default async function handler(req, res) {
       banking_details: quoteData.banking_details || '',
       disclaimer: quoteData.disclaimer || '',
 
-      // Business info
+      // Business info (the QuoteSnap account/sender)
       business_name: quoteData.business_name || '',
       business_email: quoteData.business_email || '',
       business_phone: quoteData.business_phone || '',
