@@ -15,7 +15,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { to, quote_number, client_name, total, pdfBase64, doc_label, subject, site_photos } = req.body;
+    const { to, cc, quote_number, client_name, total, pdfBase64, doc_label, subject, site_photos, business_name } = req.body;
 
     // Validate inputs
     if (!to || !quote_number || !pdfBase64) {
@@ -24,7 +24,8 @@ export default async function handler(req, res) {
 
     // Use doc_label to determine if this is a Quote or Invoice
     const label = doc_label === 'Invoice' ? 'Invoice' : 'Quote';
-    const emailSubject = subject || `${label} ${quote_number} from MZS Lead Gen`;
+    const senderName = business_name || 'MZS Lead Gen';
+    const emailSubject = subject || `${label} ${quote_number} from ${senderName}`;
     const emailHeading = label === 'Invoice' ? 'Your Invoice is Ready' : 'Your Quote is Ready';
     const filename = label === 'Invoice' ? `invoice-${quote_number}.pdf` : `quote-${quote_number}.pdf`;
 
@@ -90,8 +91,8 @@ export default async function handler(req, res) {
 
     const photosAttached = attachments.length - 1;
 
-    // Send email via Resend
-    const response = await resend.emails.send({
+    // Build the email payload
+    const emailPayload = {
       from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
       to: to,
       subject: emailSubject,
@@ -102,17 +103,27 @@ export default async function handler(req, res) {
         <p><strong>Total: R${total}</strong></p>
         ${photosAttached > 0 ? `<p>Site photos (${photosAttached}) are also attached for your reference.</p>` : ''}
         <p>Please let us know if you have any questions.</p>
-        <p>Best regards,<br>MZS Lead Gen</p>
+        <p>Best regards,<br>${senderName}</p>
       `,
       attachments: attachments
-    });
+    };
+
+    // Add CC if the sender opted in to receive a copy
+    if (cc) {
+      emailPayload.cc = cc;
+      console.log(`📋 CC copy will be sent to: ${cc}`);
+    }
+
+    // Send email via Resend
+    const response = await resend.emails.send(emailPayload);
 
     console.log(`✅ ${label} email sent — emailId: ${response.id} — photos attached: ${photosAttached}`);
     return res.status(200).json({
       success: true,
       message: `${label} email sent successfully`,
       emailId: response.id,
-      photosAttached: photosAttached
+      photosAttached: photosAttached,
+      ccSent: cc ? true : false
     });
 
   } catch (error) {
