@@ -64,6 +64,9 @@ export default async function handler(req, res) {
 
       // Financial fields
       subtotal: quoteData.subtotal || 0,
+      discount_type: quoteData.discount_type || '',
+      discount_value: quoteData.discount_value || 0,
+      discount_amount: quoteData.discount_amount || 0,
       vat_amount: quoteData.vat_amount || 0,
       total: quoteData.total || 0,
 
