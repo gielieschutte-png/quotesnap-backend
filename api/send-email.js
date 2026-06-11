@@ -15,7 +15,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { to, cc, quote_number, client_name, total, pdfBase64, doc_label, subject, site_photos, business_name } = req.body;
+    const { to, cc, quote_number, client_name, total, pdfBase64, doc_label, subject, site_photos, business_name, currency_symbol } = req.body;
 
     // Validate inputs
     if (!to || !quote_number || !pdfBase64) {
@@ -25,6 +25,7 @@ export default async function handler(req, res) {
     // Use doc_label to determine if this is a Quote or Invoice
     const label = doc_label === 'Invoice' ? 'Invoice' : 'Quote';
     const senderName = business_name || 'MZS Lead Gen';
+    const currency = currency_symbol || 'R';
     const emailSubject = subject || `${label} ${quote_number} from ${senderName}`;
     const emailHeading = label === 'Invoice' ? 'Your Invoice is Ready' : 'Your Quote is Ready';
     const filename = label === 'Invoice' ? `invoice-${quote_number}.pdf` : `quote-${quote_number}.pdf`;
@@ -100,7 +101,7 @@ export default async function handler(req, res) {
         <h2>${emailHeading}</h2>
         <p>Hi ${client_name},</p>
         <p>Please find your ${label.toLowerCase()} <strong>${quote_number}</strong> attached.</p>
-        <p><strong>Total: R${total}</strong></p>
+        <p><strong>Total: ${currency}${total}</strong></p>
         ${photosAttached > 0 ? `<p>Site photos (${photosAttached}) are also attached for your reference.</p>` : ''}
         <p>Please let us know if you have any questions.</p>
         <p>Best regards,<br>${senderName}</p>
