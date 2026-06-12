@@ -48,7 +48,6 @@ export default async function handler(req, res) {
         if (!photo) continue;
 
         try {
-          // If Base44 sent base64 objects: { base64, mimeType, filename }
           if (typeof photo === 'object' && photo.base64) {
             attachments.push({
               filename: photo.filename || `site-photo-${i + 1}.jpg`,
@@ -56,36 +55,28 @@ export default async function handler(req, res) {
               contentType: photo.mimeType || 'image/jpeg'
             });
             console.log(`✅ Photo ${i + 1} attached from base64 object`);
-
-          // If Base44 sent plain URL strings — try to fetch them
           } else if (typeof photo === 'string' && photo.startsWith('http')) {
             const photoResponse = await fetch(photo);
             if (!photoResponse.ok) {
               console.warn(`⚠️ Could not fetch photo ${i + 1}: ${photo} — Status: ${photoResponse.status}`);
               continue;
             }
-
             const photoBuffer = await photoResponse.arrayBuffer();
             const photoBase64 = Buffer.from(photoBuffer).toString('base64');
-
             const urlParts = photo.split('?')[0];
             const ext = urlParts.split('.').pop()?.toLowerCase() || 'jpg';
             const mimeType = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
-
             attachments.push({
               filename: `site-photo-${i + 1}.${ext}`,
               content: photoBase64,
               contentType: mimeType
             });
             console.log(`✅ Photo ${i + 1} attached from URL`);
-
           } else {
             console.warn(`⚠️ Photo ${i + 1} has unrecognised format:`, typeof photo, photo);
           }
-
         } catch (photoError) {
           console.warn(`⚠️ Failed to attach photo ${i + 1}:`, photoError.message);
-          // Continue — don't fail the whole email if one photo fails
         }
       }
     }
@@ -116,13 +107,22 @@ export default async function handler(req, res) {
     }
 
     // Send email via Resend
-    const response = await resend.emails.send(emailPayload);
+    const { data, error } = await resend.emails.send(emailPayload);
 
-    console.log(`✅ ${label} email sent — emailId: ${response.id} — photos attached: ${photosAttached}`);
+    if (error) {
+      console.error('❌ Resend rejected the email:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Resend failed to send the email',
+        error: error
+      });
+    }
+
+    console.log(`✅ ${label} email sent — emailId: ${data?.id} — photos attached: ${photosAttached}`);
     return res.status(200).json({
       success: true,
       message: `${label} email sent successfully`,
-      emailId: response.id,
+      emailId: data?.id,
       photosAttached: photosAttached,
       ccSent: cc ? true : false
     });
