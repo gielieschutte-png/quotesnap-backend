@@ -92,7 +92,7 @@ export default async function handler(req, res) {
         <h2>${emailHeading}</h2>
         <p>Hi ${client_name},</p>
         <p>Please find your ${label.toLowerCase()} <strong>${quote_number}</strong> attached.</p>
-        <p><strong>Total: ${currency}${total}</strong></p>
+        <p><strong>Total: ${currency}${Number(total).toFixed(2)}</strong></p>
         ${photosAttached > 0 ? `<p>Site photos (${photosAttached}) are also attached for your reference.</p>` : ''}
         <p>Please let us know if you have any questions.</p>
         <p>Best regards,<br>${senderName}</p>
