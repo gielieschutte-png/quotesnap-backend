@@ -1,12 +1,8 @@
 // /api/create-contact.js
 // Azanco — Create or Update GHL Contact
-// Called on registration AND after onboarding completes.
-// On registration: creates contact with trial fields.
-// On onboarding complete: updates existing contact with business name and phone.
 
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
-
 const TRIAL_DAYS = 14;
 
 function getTrialEndDate() {
@@ -41,37 +37,38 @@ export default async function handler(req, res) {
     const existing = searchData?.contacts || [];
 
     if (existing.length > 0) {
-      // Contact exists — update with latest details
       const contactId = existing[0].id;
       console.log(`Contact exists: ${contactId} — updating details`);
 
+      // Build update payload with correct GHL field names
       const updatePayload = {};
       if (firstName) updatePayload.firstName = firstName;
       if (lastName) updatePayload.lastName = lastName;
       if (phone) updatePayload.phone = phone;
-      if (businessName) updatePayload.companyName = businessName;
+      if (businessName) updatePayload.company = businessName; // GHL uses "company" not "companyName"
 
-      if (Object.keys(updatePayload).length > 0) {
-        const updateRes = await fetch(
-          `https://services.leadconnectorhq.com/contacts/${contactId}`,
-          {
-            method: "PUT",
-            headers: {
-              Authorization: `Bearer ${GHL_API_KEY}`,
-              Version: "2021-07-28",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(updatePayload),
-          }
-        );
-        const updateData = await updateRes.json();
-        console.log(`Updated existing contact: ${JSON.stringify(updateData?.contact?.id)}`);
-      }
+      console.log(`Update payload: ${JSON.stringify(updatePayload)}`);
+
+      const updateRes = await fetch(
+        `https://services.leadconnectorhq.com/contacts/${contactId}`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${GHL_API_KEY}`,
+            Version: "2021-07-28",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(updatePayload),
+        }
+      );
+
+      const updateData = await updateRes.json();
+      console.log(`Update result: ${JSON.stringify(updateData)}`);
 
       return res.status(200).json({ success: true, contactId, existing: true });
     }
 
-    // Contact does not exist — create new
+    // Create new contact
     const trialEndDate = getTrialEndDate();
 
     const createRes = await fetch(
@@ -89,25 +86,24 @@ export default async function handler(req, res) {
           firstName: firstName || email.split("@")[0],
           lastName: lastName || "",
           phone: phone || "",
-          companyName: businessName || "",
+          company: businessName || "",
           source: "Azanco App",
         }),
       }
     );
 
     const createData = await createRes.json();
-    console.log(`Create response: ${JSON.stringify(createData)}`);
-
     const contactId = createData?.contact?.id;
+
     if (!contactId) {
-      console.error(`No contact ID returned: ${JSON.stringify(createData)}`);
+      console.error(`No contact ID: ${JSON.stringify(createData)}`);
       return res.status(200).json({ success: false, error: "No contact ID returned" });
     }
 
     console.log(`Created contact: ${contactId}`);
 
     // Set trial custom fields
-    const updateRes = await fetch(
+    await fetch(
       `https://services.leadconnectorhq.com/contacts/${contactId}`,
       {
         method: "PUT",
@@ -125,15 +121,7 @@ export default async function handler(req, res) {
       }
     );
 
-    const updateData = await updateRes.json();
-    console.log(`Trial fields set: ${JSON.stringify(updateData?.contact?.id)}`);
-
-    return res.status(200).json({
-      success: true,
-      contactId,
-      trialEndDate,
-      existing: false,
-    });
+    return res.status(200).json({ success: true, contactId, trialEndDate, existing: false });
 
   } catch (err) {
     console.error("create-contact error:", err);
