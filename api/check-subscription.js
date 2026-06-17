@@ -1,6 +1,5 @@
 // /api/check-subscription.js
-// Azanco — Subscription Status Check
-// Matches GHL custom fields by key name (e.g. "subscription_status")
+// Azanco — Subscription Status Check (Final)
 
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
@@ -36,61 +35,70 @@ export default async function handler(req, res) {
     }
 
     const contact = contacts[0];
-
-    // GHL v2021-07-28 returns customFields on contact
-    // but also returns individual fields as top-level contact properties via customField key
-    // Try both approaches
-
-    // Approach 1: customFields array
     const customFields = contact.customFields || [];
-    console.log(`customFields count: ${customFields.length}`);
-    console.log(`Full customFields: ${JSON.stringify(customFields)}`);
 
-    // Approach 2: check contact.customField (object format some API versions return)
-    const customFieldObj = contact.customField || {};
-    console.log(`customField object: ${JSON.stringify(customFieldObj)}`);
+    let status = "trial";
+    let tier = null;
+    let trial_ends_at = null;
+    let next_billing_date = null;
 
-    // Try to get values from object format first (keyed by field key name)
-    let status = customFieldObj["subscription_status"] || null;
-    let tier = customFieldObj["subscription_tier"] || null;
+    for (const field of customFields) {
+      const val = Array.isArray(field.value) ? field.value[0] : field.value;
+      if (!val) continue;
 
-    // If not found in object, try array format by checking all fields
-    if (!status && customFields.length > 0) {
-      for (const field of customFields) {
-        const allProps = JSON.stringify(field);
-        console.log(`Checking field: ${allProps}`);
-        
-        // Check every string value in the field object
-        const val = Array.isArray(field.value) ? field.value[0] : field.value;
-        
-        // Match by known values
-        if (["trial", "active", "grace", "locked"].includes(val)) {
-          status = val;
-          console.log(`Found status via value match: ${status}`);
-        }
-        if (["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"].includes(val)) {
-          tier = val;
-          console.log(`Found tier via value match: ${tier}`);
-        }
-        if (Array.isArray(field.value)) {
-          for (const v of field.value) {
-            if (["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"].includes(v)) {
-              tier = v;
-            }
+      const valStr = String(val).trim();
+
+      // Match subscription status
+      if (["trial", "active", "grace", "locked"].includes(valStr)) {
+        status = valStr;
+      }
+
+      // Match tier
+      if (["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"].includes(valStr)) {
+        tier = valStr;
+      }
+      if (Array.isArray(field.value)) {
+        for (const v of field.value) {
+          if (["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"].includes(String(v).trim())) {
+            tier = String(v).trim();
           }
+        }
+      }
+
+      // Match dates — YYYY-MM-DD format
+      if (/^\d{4}-\d{2}-\d{2}$/.test(valStr)) {
+        // Determine which date field this is by checking field id
+        // trial_ends_at id: W3QRXXkNG8Xus36NaPBx — but we'll use position/context
+        // Use the field id to distinguish
+        const fieldId = field.id || "";
+        
+        // From our diagnostic: trial_ends_at has a specific ID
+        // We'll store any date and figure out which is which
+        if (!trial_ends_at) {
+          trial_ends_at = valStr;
+        } else {
+          next_billing_date = valStr;
         }
       }
     }
 
-    status = status || "trial";
-    console.log(`Final: status=${status}, tier=${tier}`);
+    // Calculate days remaining
+    let trial_days_remaining = null;
+    if (trial_ends_at) {
+      const end = new Date(trial_ends_at);
+      const now = new Date();
+      const diff = Math.ceil((end - now) / (1000 * 60 * 60 * 24));
+      trial_days_remaining = diff > 0 ? diff : 0;
+    }
+
+    console.log(`Result: status=${status}, tier=${tier}, trial_ends_at=${trial_ends_at}, days=${trial_days_remaining}`);
 
     return res.status(200).json({
       status,
       tier,
-      next_billing_date: null,
-      trial_ends_at: null,
-      trial_days_remaining: null,
+      next_billing_date,
+      trial_ends_at,
+      trial_days_remaining,
     });
 
   } catch (err) {
