@@ -1,5 +1,6 @@
 // /api/check-subscription.js
-// Azanco — Subscription Status Check (Working Version)
+// Azanco — Subscription Status Check
+// Matches GHL custom fields by key name (e.g. "subscription_status")
 
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
@@ -30,36 +31,59 @@ export default async function handler(req, res) {
     const contacts = searchData?.contacts || [];
 
     if (!contacts.length) {
+      console.log(`No contact found for: ${email}`);
       return res.status(200).json({ status: "trial", tier: null, next_billing_date: null, trial_ends_at: null, trial_days_remaining: null });
     }
 
     const contact = contacts[0];
+
+    // GHL v2021-07-28 returns customFields on contact
+    // but also returns individual fields as top-level contact properties via customField key
+    // Try both approaches
+
+    // Approach 1: customFields array
     const customFields = contact.customFields || [];
+    console.log(`customFields count: ${customFields.length}`);
+    console.log(`Full customFields: ${JSON.stringify(customFields)}`);
 
-    // GHL returns customFields as array of objects
-    // Use Object.keys to find the right property name dynamically
-    let status = "trial";
-    let tier = null;
+    // Approach 2: check contact.customField (object format some API versions return)
+    const customFieldObj = contact.customField || {};
+    console.log(`customField object: ${JSON.stringify(customFieldObj)}`);
 
-    for (const field of customFields) {
-      // Get all keys of this field object
-      const keys = Object.keys(field);
-      console.log(`Field keys: ${JSON.stringify(keys)}, field: ${JSON.stringify(field)}`);
-      
-      const idKey = keys.find(k => k.toLowerCase() === "id");
-      const valueKey = keys.find(k => k.toLowerCase() === "value");
-      
-      if (!idKey || !valueKey) continue;
-      
-      const fieldId = field[idKey];
-      let fieldValue = field[valueKey];
-      if (Array.isArray(fieldValue)) fieldValue = fieldValue[0] || null;
+    // Try to get values from object format first (keyed by field key name)
+    let status = customFieldObj["subscription_status"] || null;
+    let tier = customFieldObj["subscription_tier"] || null;
 
-      if (fieldId === "W3QRXXkNG8Xus36NaPBx") status = fieldValue || "trial";
-      if (fieldId === "Tir7pwVADQwH6NaZI5oP") tier = fieldValue;
+    // If not found in object, try array format by checking all fields
+    if (!status && customFields.length > 0) {
+      for (const field of customFields) {
+        const allProps = JSON.stringify(field);
+        console.log(`Checking field: ${allProps}`);
+        
+        // Check every string value in the field object
+        const val = Array.isArray(field.value) ? field.value[0] : field.value;
+        
+        // Match by known values
+        if (["trial", "active", "grace", "locked"].includes(val)) {
+          status = val;
+          console.log(`Found status via value match: ${status}`);
+        }
+        if (["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"].includes(val)) {
+          tier = val;
+          console.log(`Found tier via value match: ${tier}`);
+        }
+        if (Array.isArray(field.value)) {
+          for (const v of field.value) {
+            if (["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"].includes(v)) {
+              tier = v;
+            }
+          }
+        }
+      }
     }
 
-    console.log(`Result: status=${status}, tier=${tier}`);
+    status = status || "trial";
+    console.log(`Final: status=${status}, tier=${tier}`);
 
     return res.status(200).json({
       status,
