@@ -1,5 +1,8 @@
 // /api/create-contact.js
-// Azanco — Create GHL Contact on New Signup
+// Azanco — Create or Update GHL Contact
+// Called on registration AND after onboarding completes.
+// On registration: creates contact with trial fields.
+// On onboarding complete: updates existing contact with business name and phone.
 
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
@@ -20,7 +23,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { email, firstName, lastName, phone } = req.body;
+  const { email, firstName, lastName, phone, businessName } = req.body;
   if (!email) return res.status(400).json({ error: "Email is required" });
 
   try {
@@ -38,13 +41,39 @@ export default async function handler(req, res) {
     const existing = searchData?.contacts || [];
 
     if (existing.length > 0) {
-      console.log(`Contact already exists: ${email}`);
-      return res.status(200).json({ success: true, contactId: existing[0].id, existing: true });
+      // Contact exists — update with latest details
+      const contactId = existing[0].id;
+      console.log(`Contact exists: ${contactId} — updating details`);
+
+      const updatePayload = {};
+      if (firstName) updatePayload.firstName = firstName;
+      if (lastName) updatePayload.lastName = lastName;
+      if (phone) updatePayload.phone = phone;
+      if (businessName) updatePayload.companyName = businessName;
+
+      if (Object.keys(updatePayload).length > 0) {
+        const updateRes = await fetch(
+          `https://services.leadconnectorhq.com/contacts/${contactId}`,
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${GHL_API_KEY}`,
+              Version: "2021-07-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(updatePayload),
+          }
+        );
+        const updateData = await updateRes.json();
+        console.log(`Updated existing contact: ${JSON.stringify(updateData?.contact?.id)}`);
+      }
+
+      return res.status(200).json({ success: true, contactId, existing: true });
     }
 
+    // Contact does not exist — create new
     const trialEndDate = getTrialEndDate();
 
-    // Create contact — no customFields on creation, GHL is unreliable with them
     const createRes = await fetch(
       `https://services.leadconnectorhq.com/contacts/`,
       {
@@ -60,6 +89,7 @@ export default async function handler(req, res) {
           firstName: firstName || email.split("@")[0],
           lastName: lastName || "",
           phone: phone || "",
+          companyName: businessName || "",
           source: "Azanco App",
         }),
       }
@@ -76,7 +106,7 @@ export default async function handler(req, res) {
 
     console.log(`Created contact: ${contactId}`);
 
-    // Now update the contact with custom fields separately
+    // Set trial custom fields
     const updateRes = await fetch(
       `https://services.leadconnectorhq.com/contacts/${contactId}`,
       {
@@ -96,7 +126,7 @@ export default async function handler(req, res) {
     );
 
     const updateData = await updateRes.json();
-    console.log(`Update response: ${JSON.stringify(updateData)}`);
+    console.log(`Trial fields set: ${JSON.stringify(updateData?.contact?.id)}`);
 
     return res.status(200).json({
       success: true,
