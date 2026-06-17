@@ -23,7 +23,7 @@ export default async function handler(req, res) {
   if (!email) return res.status(400).json({ error: "Email is required" });
 
   try {
-    // Check if contact already exists
+    // Search for contact
     const searchRes = await fetch(
       `https://services.leadconnectorhq.com/contacts/?locationId=${GHL_LOCATION_ID}&query=${encodeURIComponent(email)}`,
       {
@@ -34,49 +34,69 @@ export default async function handler(req, res) {
       }
     );
     const searchData = await searchRes.json();
-    const existing = searchData?.contacts || [];
+    const contacts = searchData?.contacts || [];
 
-    if (existing.length > 0) {
-      const contactId = existing[0].id;
-      console.log(`Contact exists: ${contactId} — updating details`);
+    // Find exact email match only
+    const exactMatch = contacts.find(
+      (c) => (c.email || "").toLowerCase() === email.toLowerCase()
+    );
 
-      // Only include fields that have values
+    if (exactMatch) {
+      const contactId = exactMatch.id;
+      console.log(`Exact match found: ${contactId} for ${email}`);
+
+      // Build update — only non-empty fields
       const updatePayload = {};
       if (firstName) updatePayload.firstName = firstName;
       if (lastName) updatePayload.lastName = lastName;
       if (phone) updatePayload.phone = phone;
-      // businessName goes into customFields as GHL rejects it as a top-level field
-      
-      const fieldsToUpdate = [];
+
+      console.log(`Updating with: ${JSON.stringify(updatePayload)}, businessName: ${businessName}`);
+
+      // Update standard fields
+      if (Object.keys(updatePayload).length > 0) {
+        const r1 = await fetch(
+          `https://services.leadconnectorhq.com/contacts/${contactId}`,
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${GHL_API_KEY}`,
+              Version: "2021-07-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(updatePayload),
+          }
+        );
+        const d1 = await r1.json();
+        console.log(`Standard fields update: ${r1.status}`);
+      }
+
+      // Update business name as custom field separately
       if (businessName) {
-        fieldsToUpdate.push({ key: "company_name", field_value: businessName });
+        const r2 = await fetch(
+          `https://services.leadconnectorhq.com/contacts/${contactId}`,
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${GHL_API_KEY}`,
+              Version: "2021-07-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              customFields: [
+                { key: "subscription_status", field_value: exactMatch.customFields?.find(f => f.key === "subscription_status")?.value || "trial" },
+              ],
+            }),
+          }
+        );
+        console.log(`Custom fields update: ${r2.status}`);
       }
-      if (fieldsToUpdate.length > 0) {
-        updatePayload.customFields = fieldsToUpdate;
-      }
-
-      console.log(`Update payload: ${JSON.stringify(updatePayload)}`);
-
-      const updateRes = await fetch(
-        `https://services.leadconnectorhq.com/contacts/${contactId}`,
-        {
-          method: "PUT",
-          headers: {
-            Authorization: `Bearer ${GHL_API_KEY}`,
-            Version: "2021-07-28",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(updatePayload),
-        }
-      );
-
-      const updateData = await updateRes.json();
-      console.log(`Update result: ${JSON.stringify(updateData).substring(0, 200)}`);
 
       return res.status(200).json({ success: true, contactId, existing: true });
     }
 
-    // Create new contact
+    // No exact match — create new contact
+    console.log(`No exact match for ${email} — creating new contact`);
     const trialEndDate = getTrialEndDate();
 
     const createRes = await fetch(
@@ -100,14 +120,13 @@ export default async function handler(req, res) {
     );
 
     const createData = await createRes.json();
+    console.log(`Create status: ${createRes.status}`);
     const contactId = createData?.contact?.id;
 
     if (!contactId) {
-      console.error(`No contact ID: ${JSON.stringify(createData)}`);
+      console.error(`No contact ID: ${JSON.stringify(createData).substring(0, 300)}`);
       return res.status(200).json({ success: false, error: "No contact ID returned" });
     }
-
-    console.log(`Created contact: ${contactId}`);
 
     // Set trial custom fields
     await fetch(
@@ -128,10 +147,11 @@ export default async function handler(req, res) {
       }
     );
 
+    console.log(`Created and set trial for: ${contactId}`);
     return res.status(200).json({ success: true, contactId, trialEndDate, existing: false });
 
   } catch (err) {
-    console.error("create-contact error:", err);
+    console.error("Error:", err);
     return res.status(200).json({ success: false, error: err.message });
   }
 }
