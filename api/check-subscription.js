@@ -1,13 +1,8 @@
 // /api/check-subscription.js
-// Azanco — Subscription Status Check v3 with debug logging
+// Azanco — Subscription Status Check (Working Version)
 
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
-
-const FIELD_IDS = {
-  subscription_tier: "Tir7pwVADQwH6NaZI5oP",
-  subscription_status: "W3QRXXkNG8Xus36NaPBx",
-};
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -34,30 +29,37 @@ export default async function handler(req, res) {
     const searchData = await searchRes.json();
     const contacts = searchData?.contacts || [];
 
-    console.log(`Contacts found: ${contacts.length}`);
-
     if (!contacts.length) {
-      console.log(`No contact found for: ${email}`);
       return res.status(200).json({ status: "trial", tier: null, next_billing_date: null, trial_ends_at: null, trial_days_remaining: null });
     }
 
     const contact = contacts[0];
     const customFields = contact.customFields || [];
 
-    console.log(`Custom fields raw: ${JSON.stringify(customFields)}`);
+    // GHL returns customFields as array of objects
+    // Use Object.keys to find the right property name dynamically
+    let status = "trial";
+    let tier = null;
 
-    const getFieldById = (id) => {
-      const field = customFields.find((f) => f.id === id);
-      console.log(`Looking for ID ${id}: found=${JSON.stringify(field)}`);
-      if (!field) return null;
-      if (Array.isArray(field.value)) return field.value[0] || null;
-      return field.value || null;
-    };
+    for (const field of customFields) {
+      // Get all keys of this field object
+      const keys = Object.keys(field);
+      console.log(`Field keys: ${JSON.stringify(keys)}, field: ${JSON.stringify(field)}`);
+      
+      const idKey = keys.find(k => k.toLowerCase() === "id");
+      const valueKey = keys.find(k => k.toLowerCase() === "value");
+      
+      if (!idKey || !valueKey) continue;
+      
+      const fieldId = field[idKey];
+      let fieldValue = field[valueKey];
+      if (Array.isArray(fieldValue)) fieldValue = fieldValue[0] || null;
 
-    const status = getFieldById(FIELD_IDS.subscription_status) || "trial";
-    const tier = getFieldById(FIELD_IDS.subscription_tier) || null;
+      if (fieldId === "W3QRXXkNG8Xus36NaPBx") status = fieldValue || "trial";
+      if (fieldId === "Tir7pwVADQwH6NaZI5oP") tier = fieldValue;
+    }
 
-    console.log(`Final status: ${status}, tier: ${tier}`);
+    console.log(`Result: status=${status}, tier=${tier}`);
 
     return res.status(200).json({
       status,
@@ -68,7 +70,7 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
-    console.error("check-subscription error:", err);
+    console.error("Error:", err);
     return res.status(200).json({ status: "trial", tier: null, next_billing_date: null, trial_ends_at: null, trial_days_remaining: null });
   }
 }
