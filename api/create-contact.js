@@ -40,12 +40,20 @@ export default async function handler(req, res) {
       const contactId = existing[0].id;
       console.log(`Contact exists: ${contactId} — updating details`);
 
-      // Build update payload with correct GHL field names
+      // Only include fields that have values
       const updatePayload = {};
       if (firstName) updatePayload.firstName = firstName;
       if (lastName) updatePayload.lastName = lastName;
       if (phone) updatePayload.phone = phone;
-      if (businessName) updatePayload.company = businessName; // GHL uses "company" not "companyName"
+      // businessName goes into customFields as GHL rejects it as a top-level field
+      
+      const fieldsToUpdate = [];
+      if (businessName) {
+        fieldsToUpdate.push({ key: "company_name", field_value: businessName });
+      }
+      if (fieldsToUpdate.length > 0) {
+        updatePayload.customFields = fieldsToUpdate;
+      }
 
       console.log(`Update payload: ${JSON.stringify(updatePayload)}`);
 
@@ -63,7 +71,7 @@ export default async function handler(req, res) {
       );
 
       const updateData = await updateRes.json();
-      console.log(`Update result: ${JSON.stringify(updateData)}`);
+      console.log(`Update result: ${JSON.stringify(updateData).substring(0, 200)}`);
 
       return res.status(200).json({ success: true, contactId, existing: true });
     }
@@ -86,7 +94,6 @@ export default async function handler(req, res) {
           firstName: firstName || email.split("@")[0],
           lastName: lastName || "",
           phone: phone || "",
-          company: businessName || "",
           source: "Azanco App",
         }),
       }
