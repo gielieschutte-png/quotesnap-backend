@@ -5,6 +5,15 @@ const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 const TRIAL_DAYS = 14;
 
+// GHL Pipeline IDs
+const PIPELINE_ID = "OockSDqNecRfQul2RhxH";
+const STAGE_IDS = {
+  trial: "0d264ba6-875e-46bc-8da8-97616337c5cf",
+  active: "42e4407b-9bc9-48c3-b7be-bbbbe4ad3bfe",
+  grace: "edae721c-b7e5-4a1a-8c12-445fd2b3fce5",
+  locked: "60fc6bfe-41f2-4382-aa4c-a80f58e28767",
+};
+
 function getTrialEndDate() {
   const d = new Date();
   d.setDate(d.getDate() + TRIAL_DAYS);
@@ -25,7 +34,32 @@ async function ghlPut(contactId, payload) {
     }
   );
   const data = await res.json();
-  console.log(`PUT ${contactId} status=${res.status} result=${JSON.stringify(data).substring(0, 150)}`);
+  console.log(`PUT contact ${contactId} status=${res.status}`);
+  return { status: res.status, data };
+}
+
+async function createOpportunity(contactId, contactName) {
+  const res = await fetch(
+    `https://services.leadconnectorhq.com/opportunities/`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GHL_API_KEY}`,
+        Version: "2021-07-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        locationId: GHL_LOCATION_ID,
+        contactId,
+        name: contactName,
+        pipelineId: PIPELINE_ID,
+        pipelineStageId: STAGE_IDS.trial,
+        status: "open",
+      }),
+    }
+  );
+  const data = await res.json();
+  console.log(`Create opportunity status=${res.status}`);
   return { status: res.status, data };
 }
 
@@ -43,7 +77,7 @@ export default async function handler(req, res) {
   console.log(`Received: email=${email}, firstName=${firstName}, lastName=${lastName}, phone=${phone}, businessName=${businessName}`);
 
   try {
-    // Search for contact
+    // Search for existing contact
     const searchRes = await fetch(
       `https://services.leadconnectorhq.com/contacts/?locationId=${GHL_LOCATION_ID}&query=${encodeURIComponent(email)}`,
       {
@@ -65,15 +99,15 @@ export default async function handler(req, res) {
       const contactId = exactMatch.id;
       console.log(`Exact match: ${contactId}`);
 
-      // Standard fields — phone and companyName are top-level standard fields
-      const standardPayload = {};
-      if (firstName) standardPayload.firstName = firstName;
-      if (lastName) standardPayload.lastName = lastName;
-      if (phone) standardPayload.phone = phone;
-      if (businessName) standardPayload.companyName = businessName;
+      // Update standard fields
+      const updatePayload = {};
+      if (firstName) updatePayload.firstName = firstName;
+      if (lastName) updatePayload.lastName = lastName;
+      if (phone) updatePayload.phone = phone;
+      if (businessName) updatePayload.companyName = businessName;
 
-      if (Object.keys(standardPayload).length > 0) {
-        await ghlPut(contactId, standardPayload);
+      if (Object.keys(updatePayload).length > 0) {
+        await ghlPut(contactId, updatePayload);
       }
 
       return res.status(200).json({ success: true, contactId, existing: true });
@@ -82,6 +116,7 @@ export default async function handler(req, res) {
     // Create new contact
     console.log(`Creating new contact for: ${email}`);
     const trialEndDate = getTrialEndDate();
+    const fullName = `${firstName || email.split("@")[0]} ${lastName || ""}`.trim();
 
     const createRes = await fetch(
       `https://services.leadconnectorhq.com/contacts/`,
@@ -110,7 +145,7 @@ export default async function handler(req, res) {
 
     if (!contactId) {
       console.error(`No contact ID: ${JSON.stringify(createData).substring(0, 300)}`);
-      return res.status(200).json({ success: false, error: "No contact ID" });
+      return res.status(200).json({ success: false, error: "No contact ID returned" });
     }
 
     // Set trial custom fields
@@ -121,6 +156,10 @@ export default async function handler(req, res) {
       ],
     });
 
+    // Create pipeline opportunity at Trial stage
+    await createOpportunity(contactId, fullName);
+
+    console.log(`Contact created and added to Trial pipeline: ${contactId}`);
     return res.status(200).json({ success: true, contactId, trialEndDate, existing: false });
 
   } catch (err) {
