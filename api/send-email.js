@@ -1,7 +1,7 @@
 // api/send-email.js - Vercel Serverless Function
 import { Resend } from 'resend';
 const resend = new Resend(process.env.RESEND_API_KEY);
- 
+
 export default async function handler(req, res) {
   // Handle CORS preflight
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -13,15 +13,15 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
- 
+
   try {
-    const { to, cc, quote_number, client_name, total, pdfBase64, doc_label, subject, site_photos, business_name, currency_symbol, reply_to } = req.body;
- 
+    const { to, cc, quote_number, client_name, client_contact, total, pdfBase64, doc_label, subject, site_photos, business_name, currency_symbol, reply_to } = req.body;
+
     // Validate inputs
     if (!to || !quote_number || !pdfBase64) {
       return res.status(400).json({ error: 'Missing required fields: to, quote_number, pdfBase64' });
     }
- 
+
     // Use doc_label to determine if this is a Quote or Invoice
     const label = doc_label === 'Invoice' ? 'Invoice' : 'Quote';
     const senderName = business_name || 'Your Service Provider';
@@ -29,7 +29,7 @@ export default async function handler(req, res) {
     const emailSubject = subject || `${label} ${quote_number} from ${senderName}`;
     const emailHeading = label === 'Invoice' ? 'Your Invoice is Ready' : 'Your Quote is Ready';
     const filename = label === 'Invoice' ? `invoice-${quote_number}.pdf` : `quote-${quote_number}.pdf`;
- 
+
     // Start with the PDF attachment
     const attachments = [
       {
@@ -38,15 +38,15 @@ export default async function handler(req, res) {
         contentType: 'application/pdf'
       }
     ];
- 
+
     // Attach site photos — supports both base64 objects AND plain URLs
     if (site_photos && Array.isArray(site_photos) && site_photos.length > 0) {
       console.log(`📸 Attaching ${site_photos.length} site photo(s)...`);
- 
+
       for (let i = 0; i < site_photos.length; i++) {
         const photo = site_photos[i];
         if (!photo) continue;
- 
+
         try {
           if (typeof photo === 'object' && photo.base64) {
             attachments.push({
@@ -80,9 +80,9 @@ export default async function handler(req, res) {
         }
       }
     }
- 
+
     const photosAttached = attachments.length - 1;
- 
+
     // Build the email payload
     const emailPayload = {
       from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
@@ -90,7 +90,7 @@ export default async function handler(req, res) {
       subject: emailSubject,
       html: `
         <h2>${emailHeading}</h2>
-        <p>Hi ${client_name},</p>
+        <p>Hi ${client_contact || client_name},</p>
         <p>Please find your ${label.toLowerCase()} <strong>${quote_number}</strong> attached.</p>
         <p><strong>Total: ${currency}${Number(total).toFixed(2)}</strong></p>
         ${photosAttached > 0 ? `<p>Site photos (${photosAttached}) are also attached for your reference.</p>` : ''}
@@ -99,7 +99,7 @@ export default async function handler(req, res) {
       `,
       attachments: attachments
     };
- 
+
     // Add CC if the sender opted in to receive a copy
     if (cc) {
       emailPayload.cc = cc;
@@ -107,7 +107,7 @@ export default async function handler(req, res) {
     } else {
       console.log('📋 No CC value received in request body');
     }
- 
+
     // Set Reply-To so client replies go to the business owner, not noreply@azanco.app
     if (reply_to) {
       emailPayload.replyTo = reply_to;
@@ -115,10 +115,10 @@ export default async function handler(req, res) {
     } else {
       console.log('↩️ No reply_to value received — replies will go to FROM_EMAIL');
     }
- 
+
     // Send email via Resend
     const { data, error } = await resend.emails.send(emailPayload);
- 
+
     if (error) {
       console.error('❌ Resend rejected the email:', error);
       return res.status(500).json({
@@ -127,7 +127,7 @@ export default async function handler(req, res) {
         error: error
       });
     }
- 
+
     console.log(`✅ ${label} email sent — emailId: ${data?.id} — photos attached: ${photosAttached} — cc: ${cc || 'none'} — replyTo: ${reply_to || 'none'}`);
     return res.status(200).json({
       success: true,
@@ -137,7 +137,7 @@ export default async function handler(req, res) {
       ccSent: cc ? true : false,
       replyToSet: reply_to ? true : false
     });
- 
+
   } catch (error) {
     console.error('❌ Email error:', error);
     return res.status(500).json({
