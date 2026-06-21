@@ -109,8 +109,15 @@ export default async function handler(req, res) {
     }
 
     // Set Reply-To so client replies go to the business owner, not noreply@azanco.app
+    // Set both casings (reply_to and replyTo) plus a raw header as a guaranteed fallback,
+    // since different Resend SDK versions have used different field names for this.
     if (reply_to) {
       emailPayload.replyTo = reply_to;
+      emailPayload.reply_to = reply_to;
+      emailPayload.headers = {
+        ...(emailPayload.headers || {}),
+        'Reply-To': reply_to
+      };
       console.log(`↩️ Reply-To set to: ${reply_to}`);
     } else {
       console.log('↩️ No reply_to value received — replies will go to FROM_EMAIL');
