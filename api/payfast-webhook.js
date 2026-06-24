@@ -13,7 +13,7 @@ const PAYFAST_PASSPHRASE = process.env.PAYFAST_PASSPHRASE;
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 
-// ── NEW: Sandbox/Live mode switch ───────────────────────────────────────────
+// ── Sandbox/Live mode switch ────────────────────────────────────────────────
 // Set PAYFAST_MODE=sandbox in Vercel env vars while testing.
 // Leave unset (or set to anything else) in production to use the live server.
 const PAYFAST_MODE = process.env.PAYFAST_MODE; // "sandbox" or unset/"live"
@@ -26,6 +26,9 @@ const GHL_FIELDS = {
   subscription_tier: "subscription_tier",
   next_billing_date: "next_billing_date",
   trial_ends_at: "trial_ends_at",
+  // NEW: stores the PayFast subscription token so we can later call
+  // PayFast's /update or /adhoc API (needed for tier upgrades and renewals).
+  payfast_subscription_token: "payfast_subscription_token",
 };
 
 // ── Tier mapping by amount (ZAR) ───────────────────────────────────────────
@@ -45,15 +48,12 @@ function getNextBillingDate() {
 
 // ── PayFast ITN signature validation ──────────────────────────────────────
 function validateSignature(data, receivedSignature) {
-  // Remove signature from data before hashing
   const { signature, ...rest } = data;
 
-  // Build query string in the order PayFast sends fields
   const paramString = Object.keys(rest)
     .map((key) => `${key}=${encodeURIComponent(rest[key]).replace(/%20/g, "+")}`)
     .join("&");
 
-  // Append the PASSPHRASE (not the merchant key) — this is the correct PayFast spec
   const withPassphrase = `${paramString}&passphrase=${encodeURIComponent(
     PAYFAST_PASSPHRASE
   ).replace(/%20/g, "+")}`;
@@ -63,8 +63,6 @@ function validateSignature(data, receivedSignature) {
 }
 
 // ── Verify ITN with PayFast servers (they confirm it's real) ───────────────
-// NOTE: now uses PAYFAST_VERIFY_HOST so sandbox transactions verify against
-// PayFast's sandbox server instead of the live one.
 function verifyWithPayFast(rawBody) {
   return new Promise((resolve, reject) => {
     const options = {
@@ -112,10 +110,12 @@ async function findGHLContact(email) {
 
 // ── Update GHL contact custom fields ──────────────────────────────────────
 async function updateGHLContact(contactId, fields) {
-  const customFields = Object.entries(fields).map(([key, value]) => ({
-    key,
-    field_value: value,
-  }));
+  const customFields = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => ({
+      key,
+      field_value: value,
+    }));
 
   const res = await fetch(
     `https://services.leadconnectorhq.com/contacts/${contactId}`,
@@ -154,7 +154,7 @@ export default async function handler(req, res) {
       return res.status(400).send("Invalid merchant");
     }
 
-    // 2. Validate signature (uses PAYFAST_PASSPHRASE correctly)
+    // 2. Validate signature
     const signatureValid = validateSignature(data, data.signature);
     if (!signatureValid) {
       console.error("Signature validation failed");
@@ -170,22 +170,29 @@ export default async function handler(req, res) {
     }
 
     // 4. Extract key fields
-    // NOTE: lookupEmail now comes from custom_str1 — the hidden passthrough
-    // field we set on checkout — NOT email_address, which the payer can edit
-    // on PayFast's page before paying.
+    // lookupEmail comes from custom_str1 — the hidden passthrough field set on
+    // checkout — NOT email_address, which the payer can edit before paying.
+    //
+    // NEW: also capture `token` — PayFast includes this on the ITN for
+    // subscription/recurring payments. It's required for any future call to
+    // PayFast's /subscriptions/{token}/update or /adhoc endpoints (used for
+    // tier upgrades and manually-triggered renewal charges). It will be
+    // absent on once-off (non-subscription) payments, which is expected.
     const {
       payment_status,
       amount_gross,
-      email_address, // kept for logging only, no longer used for lookup
+      email_address, // kept for logging only, not used for lookup
       m_payment_id,
       custom_str1,
+      token, // PayFast subscription token (present on recurring/subscription ITNs)
     } = data;
 
     const lookupEmail = custom_str1;
 
     console.log(
       `PayFast ITN received: status=${payment_status}, amount=${amount_gross}, ` +
-      `payer_email=${email_address}, lookup_email(custom_str1)=${lookupEmail}, mode=${PAYFAST_MODE || "live"}`
+      `payer_email=${email_address}, lookup_email(custom_str1)=${lookupEmail}, ` +
+      `token=${token || "(none — not a subscription ITN)"}, mode=${PAYFAST_MODE || "live"}`
     );
 
     if (!lookupEmail) {
@@ -209,8 +216,16 @@ export default async function handler(req, res) {
         [GHL_FIELDS.subscription_status]: "active",
         [GHL_FIELDS.subscription_tier]: tier,
         [GHL_FIELDS.next_billing_date]: getNextBillingDate(),
+        // NEW: only written when PayFast actually sends a token (i.e. this
+        // is a subscription ITN, not a once-off payment). Once-off payments
+        // won't overwrite an existing stored token, since updateGHLContact
+        // filters out empty/undefined values before sending to GHL.
+        [GHL_FIELDS.payfast_subscription_token]: token,
       });
-      console.log(`Contact ${contactId} activated on ${tier}`);
+      console.log(
+        `Contact ${contactId} activated on ${tier}` +
+        (token ? ` — subscription token stored` : ` — no token on this ITN (once-off payment)`)
+      );
 
     } else if (payment_status === "FAILED") {
       await updateGHLContact(contactId, {
