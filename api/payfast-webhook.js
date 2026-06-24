@@ -13,6 +13,13 @@ const PAYFAST_PASSPHRASE = process.env.PAYFAST_PASSPHRASE;
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 
+// ── NEW: Sandbox/Live mode switch ───────────────────────────────────────────
+// Set PAYFAST_MODE=sandbox in Vercel env vars while testing.
+// Leave unset (or set to anything else) in production to use the live server.
+const PAYFAST_MODE = process.env.PAYFAST_MODE; // "sandbox" or unset/"live"
+const PAYFAST_VERIFY_HOST =
+  PAYFAST_MODE === "sandbox" ? "sandbox.payfast.co.za" : "www.payfast.co.za";
+
 // ── GHL custom field keys ──────────────────────────────────────────────────
 const GHL_FIELDS = {
   subscription_status: "subscription_status",
@@ -56,10 +63,12 @@ function validateSignature(data, receivedSignature) {
 }
 
 // ── Verify ITN with PayFast servers (they confirm it's real) ───────────────
+// NOTE: now uses PAYFAST_VERIFY_HOST so sandbox transactions verify against
+// PayFast's sandbox server instead of the live one.
 function verifyWithPayFast(rawBody) {
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: "www.payfast.co.za",
+      hostname: PAYFAST_VERIFY_HOST,
       port: 443,
       path: "/eng/query/validate",
       method: "POST",
@@ -145,35 +154,49 @@ export default async function handler(req, res) {
       return res.status(400).send("Invalid merchant");
     }
 
-    // 2. Validate signature (now uses PAYFAST_PASSPHRASE correctly)
+    // 2. Validate signature (uses PAYFAST_PASSPHRASE correctly)
     const signatureValid = validateSignature(data, data.signature);
     if (!signatureValid) {
       console.error("Signature validation failed");
       return res.status(400).send("Invalid signature");
     }
 
-    // 3. Verify with PayFast servers
+    // 3. Verify with PayFast servers (sandbox or live, depending on PAYFAST_MODE)
     const rawBody = querystring.stringify(data);
     const isValid = await verifyWithPayFast(rawBody);
     if (!isValid) {
-      console.error("PayFast server verification failed");
+      console.error(`PayFast server verification failed (mode: ${PAYFAST_MODE || "live"})`);
       return res.status(400).send("PayFast verification failed");
     }
 
     // 4. Extract key fields
+    // NOTE: lookupEmail now comes from custom_str1 — the hidden passthrough
+    // field we set on checkout — NOT email_address, which the payer can edit
+    // on PayFast's page before paying.
     const {
       payment_status,
       amount_gross,
-      email_address,
+      email_address, // kept for logging only, no longer used for lookup
       m_payment_id,
+      custom_str1,
     } = data;
 
-    console.log(`PayFast ITN received: status=${payment_status}, amount=${amount_gross}, email=${email_address}`);
+    const lookupEmail = custom_str1;
 
-    // 5. Find the GHL contact by email
-    const contact = await findGHLContact(email_address);
+    console.log(
+      `PayFast ITN received: status=${payment_status}, amount=${amount_gross}, ` +
+      `payer_email=${email_address}, lookup_email(custom_str1)=${lookupEmail}, mode=${PAYFAST_MODE || "live"}`
+    );
+
+    if (!lookupEmail) {
+      console.error("No custom_str1 (lookup email) present on ITN — cannot match a GHL contact");
+      return res.status(200).send("OK");
+    }
+
+    // 5. Find the GHL contact by the custom_str1 email (not the editable payer email)
+    const contact = await findGHLContact(lookupEmail);
     if (!contact) {
-      console.error(`No GHL contact found for email: ${email_address}`);
+      console.error(`No GHL contact found for email: ${lookupEmail}`);
       return res.status(200).send("OK");
     }
 
