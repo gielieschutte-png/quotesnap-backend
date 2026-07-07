@@ -6,6 +6,27 @@ const crypto = require("crypto");
 const https = require("https");
 const querystring = require("querystring");
 
+// Disable Vercel's automatic body parsing — we need the RAW, untouched
+// POST body to forward to PayFast's /eng/query/validate endpoint.
+// PayFast's server-side validation compares exact raw bytes, not a
+// reconstructed string, so re-stringifying a parsed object was silently
+// failing this check even when our own signature validation passed.
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
+// ── Helper: read the raw request body as a string ──────────────────────────
+function getRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
+
 // ── Environment variables (set these in Vercel dashboard) ──────────────────
 const PAYFAST_MERCHANT_ID = process.env.PAYFAST_MERCHANT_ID;
 const PAYFAST_MERCHANT_KEY = process.env.PAYFAST_MERCHANT_KEY;
@@ -189,12 +210,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const data = req.body; // Vercel parses urlencoded body automatically
+    // Read the RAW, untouched body first — this exact string is what we'll
+    // forward to PayFast for server-side validation.
+    const rawBody = await getRawBody(req);
+    // Parse a COPY of it into an object for our own use (signature check,
+    // field extraction) — the original rawBody string is left untouched.
+    const data = querystring.parse(rawBody);
 
-    // DEBUG: log the full raw ITN so we can see exactly what PayFast sent,
-    // especially useful for ITN types we haven't handled before (e.g.
-    // subscription cancellation notifications).
-    console.log("DEBUG - Raw ITN body received:", JSON.stringify(data));
+    console.log("DEBUG - Raw ITN body received:", rawBody);
     console.log("DEBUG - Verifying against host:", PAYFAST_VERIFY_HOST, "| PAYFAST_MODE:", PAYFAST_MODE);
 
     // 1. Validate merchant ID matches ours
@@ -211,8 +234,8 @@ export default async function handler(req, res) {
       return res.status(400).send("Invalid signature");
     }
 
-    // 3. Verify with PayFast servers (sandbox or live, depending on PAYFAST_MODE)
-    const rawBody = querystring.stringify(data);
+    // 3. Verify with PayFast servers using the ORIGINAL raw body bytes
+    // (sandbox or live, depending on PAYFAST_MODE)
     const isValid = await verifyWithPayFast(rawBody);
     console.log("DEBUG - PayFast server verification result:", isValid);
     if (!isValid) {
