@@ -62,11 +62,16 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Contact not found in GHL' });
     }
     const contactId = contact.id;
+    console.log('DEBUG - Step 1 complete. Contact ID:', contactId);
 
     // — Step 2: Extract the stored PayFast subscription token --------------
     const customFields = contact.customFields || [];
+    console.log('DEBUG - Step 2. Raw customFields:', JSON.stringify(customFields));
+    console.log('DEBUG - Step 2. Looking for field ID:', PAYFAST_TOKEN_FIELD_ID);
     const tokenField = customFields.find((f) => f.id === PAYFAST_TOKEN_FIELD_ID);
+    console.log('DEBUG - Step 2. Matched tokenField:', JSON.stringify(tokenField));
     const subscriptionToken = tokenField?.value;
+    console.log('DEBUG - Step 2. subscriptionToken value:', subscriptionToken);
 
     if (!subscriptionToken) {
       console.error('❌ No payfast_subscription_token found for contact:', contactId);
