@@ -31,6 +31,9 @@ const GHL_FIELDS = {
   payfast_subscription_token: "payfast_subscription_token",
 };
 
+// ── Azanco Signup pipeline (used to update the opportunity's monetary value) ─
+const PIPELINE_ID = "OockSDqNecRfQul2RhxH";
+
 // ── Tier mapping by amount (ZAR) ───────────────────────────────────────────
 function getTierFromAmount(amount) {
   const num = parseFloat(amount);
@@ -139,6 +142,46 @@ async function updateGHLContact(contactId, fields) {
   return data;
 }
 
+// ── NEW: Find the open opportunity for a contact within a pipeline ─────────
+async function findOpportunityForContact(contactId) {
+  const url = `https://services.leadconnectorhq.com/opportunities/search?location_id=${GHL_LOCATION_ID}&pipeline_id=${PIPELINE_ID}&contact_id=${contactId}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${GHL_API_KEY}`,
+      Version: "2021-07-28",
+    },
+  });
+  if (!res.ok) {
+    console.error("GHL opportunity search failed:", await res.text());
+    return null;
+  }
+  const data = await res.json();
+  const opportunities = data.opportunities || [];
+  return opportunities[0] || null;
+}
+
+// ── NEW: Set the opportunity's monetary value ──────────────────────────────
+async function updateOpportunityValue(opportunityId, amountGross) {
+  const monetaryValue = parseFloat(amountGross);
+  const res = await fetch(
+    `https://services.leadconnectorhq.com/opportunities/${opportunityId}`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${GHL_API_KEY}`,
+        Version: "2021-07-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ monetaryValue }),
+    }
+  );
+  if (!res.ok) {
+    console.error("GHL opportunity value update failed:", await res.text());
+    return false;
+  }
+  return true;
+}
+
 // ── Main handler ───────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -170,14 +213,6 @@ export default async function handler(req, res) {
     }
 
     // 4. Extract key fields
-    // lookupEmail comes from custom_str1 — the hidden passthrough field set on
-    // checkout — NOT email_address, which the payer can edit before paying.
-    //
-    // NEW: also capture `token` — PayFast includes this on the ITN for
-    // subscription/recurring payments. It's required for any future call to
-    // PayFast's /subscriptions/{token}/update or /adhoc endpoints (used for
-    // tier upgrades and manually-triggered renewal charges). It will be
-    // absent on once-off (non-subscription) payments, which is expected.
     const {
       payment_status,
       amount_gross,
@@ -216,16 +251,25 @@ export default async function handler(req, res) {
         [GHL_FIELDS.subscription_status]: "active",
         [GHL_FIELDS.subscription_tier]: tier,
         [GHL_FIELDS.next_billing_date]: getNextBillingDate(),
-        // NEW: only written when PayFast actually sends a token (i.e. this
-        // is a subscription ITN, not a once-off payment). Once-off payments
-        // won't overwrite an existing stored token, since updateGHLContact
-        // filters out empty/undefined values before sending to GHL.
         [GHL_FIELDS.payfast_subscription_token]: token,
       });
       console.log(
         `Contact ${contactId} activated on ${tier}` +
         (token ? ` — subscription token stored` : ` — no token on this ITN (once-off payment)`)
       );
+
+      // NEW: set the opportunity's monetary value to the real payment amount
+      const opportunity = await findOpportunityForContact(contactId);
+      if (opportunity) {
+        const valueSet = await updateOpportunityValue(opportunity.id, amount_gross);
+        console.log(
+          valueSet
+            ? `Opportunity ${opportunity.id} monetaryValue set to R${amount_gross}`
+            : `Opportunity ${opportunity.id} monetaryValue update FAILED`
+        );
+      } else {
+        console.warn(`No opportunity found for contact ${contactId} — monetaryValue not set`);
+      }
 
     } else if (payment_status === "FAILED") {
       await updateGHLContact(contactId, {
