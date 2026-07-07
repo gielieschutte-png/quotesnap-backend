@@ -32,7 +32,8 @@ export default async function handler(req, res) {
     const GHL_API_KEY = process.env.GHL_API_KEY;
     const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 
-    // — GHL custom field keys (must match payfast-webhook.js exactly) -----
+    // — GHL custom field keys (used when WRITING — GHL resolves key -> id
+    // correctly on PUT requests, this part already works fine) -----------
     const GHL_FIELDS = {
       subscription_status: 'subscription_status',
       subscription_tier: 'subscription_tier',
@@ -41,6 +42,13 @@ export default async function handler(req, res) {
       payfast_subscription_token: 'payfast_subscription_token',
       cancellation_reason: 'cancellation_reason',
     };
+
+    // GHL's contact READ API only ever returns custom fields as
+    // {id, value} — never {key, value} — confirmed via debug logging on
+    // 7 July 2026. This internal ID is specific to the Azanco GHL location
+    // and only needs updating if this exact field is ever deleted and
+    // recreated (as happened previously with next_billing_date).
+    const PAYFAST_TOKEN_FIELD_ID = 'dAKUDihX1x17aY2jT1W9';
 
     // Confirmed correct as of 7 July 2026, verified directly against GHL's
     // live pipeline API response.
@@ -57,11 +65,8 @@ export default async function handler(req, res) {
 
     // — Step 2: Extract the stored PayFast subscription token --------------
     const customFields = contact.customFields || [];
-    console.log('DEBUG - Raw contact.customFields:', JSON.stringify(customFields));
-    const tokenField = customFields.find(
-      (f) => f.id === GHL_FIELDS.payfast_subscription_token || f.key === GHL_FIELDS.payfast_subscription_token
-    );
-    const subscriptionToken = tokenField?.value || tokenField?.field_value;
+    const tokenField = customFields.find((f) => f.id === PAYFAST_TOKEN_FIELD_ID);
+    const subscriptionToken = tokenField?.value;
 
     if (!subscriptionToken) {
       console.error('❌ No payfast_subscription_token found for contact:', contactId);
@@ -69,6 +74,8 @@ export default async function handler(req, res) {
         error: 'No active PayFast subscription token found for this account. Cannot cancel automatically — may need manual handling.',
       });
     }
+
+    console.log('✅ Found subscription token:', subscriptionToken);
 
     // — Step 3: Cancel the PayFast subscription -----------------------------
     const payfastResult = await cancelPayFastSubscription(
@@ -216,8 +223,6 @@ async function updateOpportunityStage(opportunityId, stageId, apiKey) {
 // ---------------------------------------------------------------------------
 async function cancelPayFastSubscription(token, merchantId, passphrase) {
   try {
-    // ISO-8601 timestamp WITHOUT milliseconds or a trailing Z, matching
-    // PayFast's documented example format: 2016-04-01T12:00:01
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const timestamp =
