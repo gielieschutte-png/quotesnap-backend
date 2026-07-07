@@ -191,14 +191,21 @@ export default async function handler(req, res) {
   try {
     const data = req.body; // Vercel parses urlencoded body automatically
 
+    // DEBUG: log the full raw ITN so we can see exactly what PayFast sent,
+    // especially useful for ITN types we haven't handled before (e.g.
+    // subscription cancellation notifications).
+    console.log("DEBUG - Raw ITN body received:", JSON.stringify(data));
+    console.log("DEBUG - Verifying against host:", PAYFAST_VERIFY_HOST, "| PAYFAST_MODE:", PAYFAST_MODE);
+
     // 1. Validate merchant ID matches ours
     if (data.merchant_id !== PAYFAST_MERCHANT_ID) {
-      console.error("Merchant ID mismatch");
+      console.error("Merchant ID mismatch. Received:", data.merchant_id, "| Expected:", PAYFAST_MERCHANT_ID);
       return res.status(400).send("Invalid merchant");
     }
 
     // 2. Validate signature
     const signatureValid = validateSignature(data, data.signature);
+    console.log("DEBUG - Local signature check result:", signatureValid, "| Received signature:", data.signature);
     if (!signatureValid) {
       console.error("Signature validation failed");
       return res.status(400).send("Invalid signature");
@@ -207,6 +214,7 @@ export default async function handler(req, res) {
     // 3. Verify with PayFast servers (sandbox or live, depending on PAYFAST_MODE)
     const rawBody = querystring.stringify(data);
     const isValid = await verifyWithPayFast(rawBody);
+    console.log("DEBUG - PayFast server verification result:", isValid);
     if (!isValid) {
       console.error(`PayFast server verification failed (mode: ${PAYFAST_MODE || "live"})`);
       return res.status(400).send("PayFast verification failed");
