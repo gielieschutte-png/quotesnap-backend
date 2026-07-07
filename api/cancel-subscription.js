@@ -57,6 +57,7 @@ export default async function handler(req, res) {
 
     // — Step 2: Extract the stored PayFast subscription token --------------
     const customFields = contact.customFields || [];
+    console.log('DEBUG - Raw contact.customFields:', JSON.stringify(customFields));
     const tokenField = customFields.find(
       (f) => f.id === GHL_FIELDS.payfast_subscription_token || f.key === GHL_FIELDS.payfast_subscription_token
     );
