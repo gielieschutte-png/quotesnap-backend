@@ -70,8 +70,6 @@ export default async function handler(req, res) {
     }
 
     // — Step 3: Cancel the PayFast subscription -----------------------------
-    // NOTE: Verify this signature format against PayFast's live subscription API docs
-    // before relying on it — PayFast's signing order/params can be strict.
     const payfastResult = await cancelPayFastSubscription(
       subscriptionToken,
       PAYFAST_MERCHANT_ID,
@@ -211,20 +209,37 @@ async function updateOpportunityStage(opportunityId, stageId, apiKey) {
 
 // ---------------------------------------------------------------------------
 // Helper: cancel a PayFast subscription
-// NOTE: Verify signature construction against PayFast's live subscription API
-// docs before trusting this in production — their signing rules are strict
-// about parameter order and encoding.
+// Signature = MD5 hash of the alphabetised header variables plus the
+// passphrase, each value URL-encoded (spaces as '+'), all lowercase.
+// Per: developers.payfast.co.za/api#cancel-a-subscription
 // ---------------------------------------------------------------------------
 async function cancelPayFastSubscription(token, merchantId, passphrase) {
   try {
-    const timestamp = new Date().toISOString();
+    // ISO-8601 timestamp WITHOUT milliseconds or a trailing Z, matching
+    // PayFast's documented example format: 2016-04-01T12:00:01
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const timestamp =
+      `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+      `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
     const version = 'v1';
 
-    // Build signature string per PayFast subscription API spec
-    const signatureBase = `merchant-id=${merchantId}&passphrase=${passphrase}&timestamp=${encodeURIComponent(
-      timestamp
-    )}&version=${version}`;
-    const signature = crypto.createHash('md5').update(signatureBase).digest('hex');
+    const params = {
+      'merchant-id': merchantId,
+      passphrase: passphrase,
+      timestamp: timestamp,
+      version: version,
+    };
+
+    const sortedKeys = Object.keys(params).sort();
+    const signatureInput = sortedKeys
+      .map((k) => `${k}=${encodeURIComponent(params[k]).replace(/%20/g, '+')}`)
+      .join('&');
+
+    const signature = crypto.createHash('md5').update(signatureInput).digest('hex').toLowerCase();
+
+    console.log('PayFast cancel signature input:', signatureInput);
 
     const response = await fetch(`https://api.payfast.co.za/subscriptions/${token}/cancel`, {
       method: 'PUT',
