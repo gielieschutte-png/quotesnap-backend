@@ -6,12 +6,18 @@ const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 const TRIAL_DAYS = 14;
 
 // GHL Pipeline IDs
+// NOTE: these stage IDs were re-verified directly against GHL's live pipeline
+// data on 7 July 2026 (via the opportunities/pipelines API response) after
+// discovering Active and Grace period had drifted from their original June
+// 2026 mapping — likely when the Cancelled stage was added. This mapping is
+// confirmed correct as of 7 July 2026.
 const PIPELINE_ID = "OockSDqNecRfQul2RhxH";
 const STAGE_IDS = {
   trial: "0d264ba6-875e-46bc-8da8-97616337c5cf",
-  active: "42e4407b-9bc9-48c3-b7be-bbbbe4ad3bfe",
-  grace: "edae721c-b7e5-4a1a-8c12-445fd2b3fce5",
+  active: "edae721c-b7e5-4a1a-8c12-445fd2b3fce5",
+  grace: "42e4407b-9bc9-48c3-b7be-bbbbe4ad3bfe",
   locked: "60fc6bfe-41f2-4382-aa4c-a80f58e28767",
+  cancelled: "9c788839-7a33-4d45-ba7c-0868fd7636e7",
 };
 
 function getTrialEndDate() {
