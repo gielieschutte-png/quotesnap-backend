@@ -45,10 +45,14 @@ export default async function handler(req, res) {
 
     // GHL's contact READ API only ever returns custom fields as
     // {id, value} — never {key, value} — confirmed via debug logging on
-    // 7 July 2026. This internal ID is specific to the Azanco GHL location
-    // and only needs updating if this exact field is ever deleted and
-    // recreated (as happened previously with next_billing_date).
-    const PAYFAST_TOKEN_FIELD_ID = 'dAKUDihX1x17aY2jT1W9';
+    // 7 July 2026. Matching by internal ID proved unreliable (likely a
+    // visually-identical character mismatch, e.g. '1' vs 'l', introduced
+    // when manually copying the ID). Instead, we match by VALUE SHAPE:
+    // PayFast subscription tokens are always UUID-formatted
+    // (8-4-4-4-12 hex characters), and no other Azanco custom field uses
+    // that shape — so this is both simpler and immune to the field being
+    // deleted/recreated in future (unlike matching by internal ID).
+    const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     // Confirmed correct as of 7 July 2026, verified directly against GHL's
     // live pipeline API response.
@@ -62,16 +66,13 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Contact not found in GHL' });
     }
     const contactId = contact.id;
-    console.log('DEBUG - Step 1 complete. Contact ID:', contactId);
 
     // — Step 2: Extract the stored PayFast subscription token --------------
     const customFields = contact.customFields || [];
-    console.log('DEBUG - Step 2. Raw customFields:', JSON.stringify(customFields));
-    console.log('DEBUG - Step 2. Looking for field ID:', PAYFAST_TOKEN_FIELD_ID);
-    const tokenField = customFields.find((f) => f.id === PAYFAST_TOKEN_FIELD_ID);
-    console.log('DEBUG - Step 2. Matched tokenField:', JSON.stringify(tokenField));
+    const tokenField = customFields.find(
+      (f) => typeof f.value === 'string' && UUID_PATTERN.test(f.value)
+    );
     const subscriptionToken = tokenField?.value;
-    console.log('DEBUG - Step 2. subscriptionToken value:', subscriptionToken);
 
     if (!subscriptionToken) {
       console.error('❌ No payfast_subscription_token found for contact:', contactId);
