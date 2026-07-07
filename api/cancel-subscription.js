@@ -87,7 +87,8 @@ export default async function handler(req, res) {
     const payfastResult = await cancelPayFastSubscription(
       subscriptionToken,
       PAYFAST_MERCHANT_ID,
-      PAYFAST_PASSPHRASE
+      PAYFAST_PASSPHRASE,
+      process.env.PAYFAST_MODE === 'sandbox'
     );
 
     if (!payfastResult.success) {
@@ -227,7 +228,7 @@ async function updateOpportunityStage(opportunityId, stageId, apiKey) {
 // passphrase, each value URL-encoded (spaces as '+'), all lowercase.
 // Per: developers.payfast.co.za/api#cancel-a-subscription
 // ---------------------------------------------------------------------------
-async function cancelPayFastSubscription(token, merchantId, passphrase) {
+async function cancelPayFastSubscription(token, merchantId, passphrase, isSandbox) {
   try {
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
@@ -253,7 +254,13 @@ async function cancelPayFastSubscription(token, merchantId, passphrase) {
 
     console.log('PayFast cancel signature input:', signatureInput);
 
-    const response = await fetch(`https://api.payfast.co.za/subscriptions/${token}/cancel`, {
+    // PayFast's Recurring Billing API uses the SAME host for sandbox and
+    // live — sandbox mode is triggered by a ?testing=true query param, not
+    // a different domain (confirmed via developers.payfast.co.za/api).
+    const url = `https://api.payfast.co.za/subscriptions/${token}/cancel${isSandbox ? '?testing=true' : ''}`;
+    console.log('PayFast cancel URL:', url);
+
+    const response = await fetch(url, {
       method: 'PUT',
       headers: {
         'merchant-id': merchantId,
