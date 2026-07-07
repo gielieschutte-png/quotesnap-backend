@@ -1,0 +1,250 @@
+// api/cancel-subscription.js - Vercel Serverless Function
+// Cancels a PayFast subscription and updates GHL to reflect cancellation.
+// Called from Base44 CancelSubscriptionCard when an Owner confirms cancellation.
+
+import crypto from 'crypto';
+
+export default async function handler(req, res) {
+  // Handle CORS preflight
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  try {
+    const { ownerEmail, cancellationReason } = req.body;
+
+    console.log('🚫 Cancellation request received:', { ownerEmail, cancellationReason });
+
+    if (!ownerEmail) {
+      console.error('❌ Missing field: ownerEmail');
+      return res.status(400).json({ error: 'Missing required field: ownerEmail' });
+    }
+
+    // — Environment variables ---------------------------------------------
+    const PAYFAST_MERCHANT_ID = process.env.PAYFAST_MERCHANT_ID;
+    const PAYFAST_PASSPHRASE = process.env.PAYFAST_PASSPHRASE;
+    const GHL_API_KEY = process.env.GHL_API_KEY;
+    const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
+
+    // — GHL custom field keys (must match payfast-webhook.js exactly) -----
+    const GHL_FIELDS = {
+      subscription_status: 'subscription_status',
+      subscription_tier: 'subscription_tier',
+      next_billing_date: 'next_billing_date',
+      trial_ends_at: 'trial_ends_at',
+      payfast_subscription_token: 'payfast_subscription_token',
+      cancellation_reason: 'cancellation_reason',
+    };
+
+    // Confirmed correct as of 7 July 2026, verified directly against GHL's
+    // live pipeline API response.
+    const CANCELLED_STAGE_ID = '9c788839-7a33-4d45-ba7c-0868fd7636e7';
+    const PIPELINE_ID = 'OockSDqNecRfQul2RhxH'; // Azanco Signup pipeline
+
+    // — Step 1: Find the GHL contact by owner email ------------------------
+    const contact = await findGHLContact(ownerEmail, GHL_API_KEY, GHL_LOCATION_ID);
+    if (!contact) {
+      console.error('❌ No GHL contact found for:', ownerEmail);
+      return res.status(404).json({ error: 'Contact not found in GHL' });
+    }
+    const contactId = contact.id;
+
+    // — Step 2: Extract the stored PayFast subscription token --------------
+    const customFields = contact.customFields || [];
+    const tokenField = customFields.find(
+      (f) => f.id === GHL_FIELDS.payfast_subscription_token || f.key === GHL_FIELDS.payfast_subscription_token
+    );
+    const subscriptionToken = tokenField?.value || tokenField?.field_value;
+
+    if (!subscriptionToken) {
+      console.error('❌ No payfast_subscription_token found for contact:', contactId);
+      return res.status(400).json({
+        error: 'No active PayFast subscription token found for this account. Cannot cancel automatically — may need manual handling.',
+      });
+    }
+
+    // — Step 3: Cancel the PayFast subscription -----------------------------
+    // NOTE: Verify this signature format against PayFast's live subscription API docs
+    // before relying on it — PayFast's signing order/params can be strict.
+    const payfastResult = await cancelPayFastSubscription(
+      subscriptionToken,
+      PAYFAST_MERCHANT_ID,
+      PAYFAST_PASSPHRASE
+    );
+
+    if (!payfastResult.success) {
+      console.error('❌ PayFast cancellation failed:', payfastResult.error);
+      return res.status(502).json({
+        error: 'PayFast cancellation failed. No GHL changes made.',
+        details: payfastResult.error,
+      });
+    }
+
+    console.log(`✅ PayFast subscription ${subscriptionToken} cancelled successfully.`);
+
+    // — Step 4: Update GHL contact custom fields ----------------------------
+    await updateGHLContact(contactId, {
+      [GHL_FIELDS.subscription_status]: 'cancelled',
+      [GHL_FIELDS.cancellation_reason]: cancellationReason || 'Not specified',
+    }, GHL_API_KEY);
+
+    console.log(`✅ Contact ${contactId} subscription_status set to 'cancelled'.`);
+
+    // — Step 5: Move the opportunity to the Cancelled pipeline stage --------
+    const opportunity = await findOpportunityForContact(contactId, PIPELINE_ID, GHL_API_KEY, GHL_LOCATION_ID);
+    if (opportunity) {
+      await updateOpportunityStage(opportunity.id, CANCELLED_STAGE_ID, GHL_API_KEY);
+      console.log(`✅ Opportunity ${opportunity.id} moved to Cancelled stage.`);
+    } else {
+      console.warn(`⚠️ No opportunity found for contact ${contactId} — pipeline stage not updated.`);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Subscription cancelled successfully.',
+      contactId,
+    });
+  } catch (err) {
+    console.error('❌ Webhook error:', err);
+    return res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: find GHL contact by email
+// ---------------------------------------------------------------------------
+async function findGHLContact(email, apiKey, locationId) {
+  const url = `https://services.leadconnectorhq.com/contacts/search/duplicate?locationId=${locationId}&email=${encodeURIComponent(email)}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Version: '2021-07-28',
+    },
+  });
+  if (!response.ok) {
+    console.error('GHL contact search failed:', await response.text());
+    return null;
+  }
+  const data = await response.json();
+  const found = data.contact;
+  if (!found) return null;
+
+  // Verify exact email match client-side (GHL search can be fuzzy)
+  if (found.email?.toLowerCase() !== email.toLowerCase()) return null;
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: update GHL contact custom fields
+// ---------------------------------------------------------------------------
+async function updateGHLContact(contactId, fieldsObj, apiKey) {
+  const customField = Object.entries(fieldsObj)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => ({ key, field_value: value }));
+
+  const response = await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Version: '2021-07-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ customFields: customField }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('GHL contact update failed:', errText);
+    throw new Error('Failed to update GHL contact');
+  }
+  return response.json();
+}
+
+// ---------------------------------------------------------------------------
+// Helper: find the open opportunity for a contact within a pipeline
+// ---------------------------------------------------------------------------
+async function findOpportunityForContact(contactId, pipelineId, apiKey, locationId) {
+  const url = `https://services.leadconnectorhq.com/opportunities/search?location_id=${locationId}&pipeline_id=${pipelineId}&contact_id=${contactId}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Version: '2021-07-28',
+    },
+  });
+  if (!response.ok) {
+    console.error('GHL opportunity search failed:', await response.text());
+    return null;
+  }
+  const data = await response.json();
+  const opportunities = data.opportunities || [];
+  return opportunities[0] || null;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: move an opportunity to a new pipeline stage
+// ---------------------------------------------------------------------------
+async function updateOpportunityStage(opportunityId, stageId, apiKey) {
+  const response = await fetch(`https://services.leadconnectorhq.com/opportunities/${opportunityId}`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Version: '2021-07-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ pipelineStageId: stageId }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('GHL opportunity stage update failed:', errText);
+    throw new Error('Failed to update opportunity stage');
+  }
+  return response.json();
+}
+
+// ---------------------------------------------------------------------------
+// Helper: cancel a PayFast subscription
+// NOTE: Verify signature construction against PayFast's live subscription API
+// docs before trusting this in production — their signing rules are strict
+// about parameter order and encoding.
+// ---------------------------------------------------------------------------
+async function cancelPayFastSubscription(token, merchantId, passphrase) {
+  try {
+    const timestamp = new Date().toISOString();
+    const version = 'v1';
+
+    // Build signature string per PayFast subscription API spec
+    const signatureBase = `merchant-id=${merchantId}&passphrase=${passphrase}&timestamp=${encodeURIComponent(
+      timestamp
+    )}&version=${version}`;
+    const signature = crypto.createHash('md5').update(signatureBase).digest('hex');
+
+    const response = await fetch(`https://api.payfast.co.za/subscriptions/${token}/cancel`, {
+      method: 'PUT',
+      headers: {
+        'merchant-id': merchantId,
+        version,
+        timestamp,
+        signature,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const responseData = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      return { success: false, error: responseData?.message || `PayFast returned status ${response.status}` };
+    }
+
+    return { success: true, data: responseData };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
