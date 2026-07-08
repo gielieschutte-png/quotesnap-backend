@@ -1,5 +1,19 @@
 // /api/create-contact.js
 // Azanco — Create or Update GHL Contact
+//
+// UPDATED 8 July 2026: now accepts an `isNewCompany` flag in the request
+// body. Every signup still creates/updates a GHL Contact (so support can
+// always look up any user), but an Opportunity is now ONLY created when
+// isNewCompany is true — i.e. only the person actually creating a brand
+// new company gets a pipeline card. Team members joining an EXISTING
+// company via Company Code no longer spawn their own duplicate Trial
+// Opportunity.
+//
+// IMPORTANT: this only works once the Base44 frontend is updated to pass
+// isNewCompany: true/false in the request body, based on whether the user
+// went through "Create a company" vs "Join via Company Code" during
+// onboarding. Until that frontend change ships, this flag will be
+// undefined on every request — see the fallback behaviour noted below.
 
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
@@ -77,10 +91,19 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { email, firstName, lastName, phone, businessName } = req.body;
+  const { email, firstName, lastName, phone, businessName, isNewCompany } = req.body;
   if (!email) return res.status(400).json({ error: "Email is required" });
 
-  console.log(`Received: email=${email}, firstName=${firstName}, lastName=${lastName}, phone=${phone}, businessName=${businessName}`);
+  // FALLBACK BEHAVIOUR while Base44 hasn't been updated yet to send this
+  // flag: isNewCompany will be `undefined`. We treat that the SAME as the
+  // old behaviour (create an Opportunity) so nothing breaks or silently
+  // stops working before the frontend change ships tonight. Once Base44
+  // is sending real true/false values, this fallback stops mattering.
+  const shouldCreateOpportunity = isNewCompany !== false;
+
+  console.log(
+    `Received: email=${email}, firstName=${firstName}, lastName=${lastName}, phone=${phone}, businessName=${businessName}, isNewCompany=${isNewCompany} (shouldCreateOpportunity=${shouldCreateOpportunity})`
+  );
 
   try {
     // Search for existing contact
@@ -119,7 +142,8 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, contactId, existing: true });
     }
 
-    // Create new contact
+    // Create new contact — this ALWAYS happens, regardless of isNewCompany,
+    // so every person (owner or team member) is findable in GHL for support.
     console.log(`Creating new contact for: ${email}`);
     const trialEndDate = getTrialEndDate();
     const fullName = `${firstName || email.split("@")[0]} ${lastName || ""}`.trim();
@@ -154,7 +178,8 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: false, error: "No contact ID returned" });
     }
 
-    // Set trial custom fields
+    // Set trial custom fields — every contact gets these, owner or member,
+    // so support can see trial/subscription context for anyone.
     await ghlPut(contactId, {
       customFields: [
         { key: "subscription_status", field_value: "trial" },
@@ -162,10 +187,17 @@ export default async function handler(req, res) {
       ],
     });
 
-    // Create pipeline opportunity at Trial stage
-    await createOpportunity(contactId, fullName);
+    // Only create a pipeline Opportunity for genuinely NEW companies.
+    // Team members joining an existing company via Company Code get a
+    // Contact (for support visibility) but no separate Opportunity card —
+    // the company already has one, created when its owner signed up.
+    if (shouldCreateOpportunity) {
+      await createOpportunity(contactId, fullName);
+      console.log(`Contact created and added to Trial pipeline: ${contactId}`);
+    } else {
+      console.log(`Contact created WITHOUT a new Opportunity (joined existing company): ${contactId}`);
+    }
 
-    console.log(`Contact created and added to Trial pipeline: ${contactId}`);
     return res.status(200).json({ success: true, contactId, trialEndDate, existing: false });
 
   } catch (err) {
