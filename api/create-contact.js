@@ -58,6 +58,25 @@ async function ghlPut(contactId, payload) {
   return { status: res.status, data };
 }
 
+async function findExistingOpportunity(contactId) {
+  const res = await fetch(
+    `https://services.leadconnectorhq.com/opportunities/search?location_id=${GHL_LOCATION_ID}&pipeline_id=${PIPELINE_ID}&contact_id=${contactId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${GHL_API_KEY}`,
+        Version: "2021-07-28",
+      },
+    }
+  );
+  if (!res.ok) {
+    console.error("Opportunity search failed:", await res.text());
+    return null;
+  }
+  const data = await res.json();
+  const opportunities = data.opportunities || [];
+  return opportunities[0] || null;
+}
+
 async function createOpportunity(contactId, contactName) {
   const res = await fetch(
     `https://services.leadconnectorhq.com/opportunities/`,
@@ -137,6 +156,24 @@ export default async function handler(req, res) {
 
       if (Object.keys(updatePayload).length > 0) {
         await ghlPut(contactId, updatePayload);
+      }
+
+      // NEW (8 July 2026): handles the real signup sequence — Register.jsx
+      // creates this contact FIRST (before the user has chosen Create vs
+      // Join), with isNewCompany:false, so no Opportunity yet. If the user
+      // then goes through "Create a Company", Onboarding.jsx calls this
+      // endpoint AGAIN on the same (now-existing) contact with
+      // isNewCompany:true — this is where we retroactively create the
+      // Opportunity, but only if one doesn't already exist for them.
+      if (shouldCreateOpportunity) {
+        const existingOpp = await findExistingOpportunity(contactId);
+        if (!existingOpp) {
+          const fullNameForOpp = `${firstName || email.split("@")[0]} ${lastName || ""}`.trim();
+          await createOpportunity(contactId, fullNameForOpp);
+          console.log(`Retroactively created Opportunity for existing contact: ${contactId}`);
+        } else {
+          console.log(`Opportunity already exists for contact ${contactId} — not creating another.`);
+        }
       }
 
       return res.status(200).json({ success: true, contactId, existing: true });
