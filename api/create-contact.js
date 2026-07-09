@@ -110,8 +110,20 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { email, firstName, lastName, phone, businessName, isNewCompany } = req.body;
+  const { email, firstName, lastName, phone, businessName, isNewCompany, companyCode } = req.body;
   if (!email) return res.status(400).json({ error: "Email is required" });
+
+  // signup_type is written to GHL so two separate workflows can trigger
+  // correctly: "owner" gets the full 14-day-trial welcome email, "member"
+  // gets a simpler "you've joined the team" email. Left blank at
+  // Register.jsx's early call (isNewCompany undefined) deliberately —
+  // we don't know owner-vs-member yet at that point, so nothing should
+  // fire prematurely.
+  let signupType;
+  if (isNewCompany === true) signupType = "owner";
+  else if (isNewCompany === false && companyCode) signupType = "member";
+  // else: leave undefined (Register.jsx's early call) — no signup_type
+  // written yet, so no GHL workflow triggers off it at this point.
 
   // FALLBACK BEHAVIOUR while Base44 hasn't been updated yet to send this
   // flag: isNewCompany will be `undefined`. We treat that the SAME as the
@@ -121,7 +133,7 @@ export default async function handler(req, res) {
   const shouldCreateOpportunity = isNewCompany !== false;
 
   console.log(
-    `Received: email=${email}, firstName=${firstName}, lastName=${lastName}, phone=${phone}, businessName=${businessName}, isNewCompany=${isNewCompany} (shouldCreateOpportunity=${shouldCreateOpportunity})`
+    `Received: email=${email}, firstName=${firstName}, lastName=${lastName}, phone=${phone}, businessName=${businessName}, isNewCompany=${isNewCompany}, companyCode=${companyCode}, signupType=${signupType} (shouldCreateOpportunity=${shouldCreateOpportunity})`
   );
 
   try {
@@ -156,6 +168,20 @@ export default async function handler(req, res) {
 
       if (Object.keys(updatePayload).length > 0) {
         await ghlPut(contactId, updatePayload);
+      }
+
+      // Write signup_type/role/company_code as custom fields when known
+      // (only when isNewCompany is explicitly true or false — never
+      // overwrite with blanks from Register.jsx's early undefined call)
+      if (signupType) {
+        const customFieldPayload = {
+          signup_type: signupType,
+          role: signupType, // "owner" or "member" — same value, two field names for support search flexibility
+        };
+        if (companyCode) customFieldPayload.company_code = companyCode;
+        await ghlPut(contactId, {
+          customFields: Object.entries(customFieldPayload).map(([key, field_value]) => ({ key, field_value })),
+        });
       }
 
       // NEW (8 July 2026): handles the real signup sequence — Register.jsx
@@ -217,12 +243,18 @@ export default async function handler(req, res) {
 
     // Set trial custom fields — every contact gets these, owner or member,
     // so support can see trial/subscription context for anyone.
-    await ghlPut(contactId, {
-      customFields: [
-        { key: "subscription_status", field_value: "trial" },
-        { key: "trial_ends_at", field_value: trialEndDate },
-      ],
-    });
+    const newContactFields = [
+      { key: "subscription_status", field_value: "trial" },
+      { key: "trial_ends_at", field_value: trialEndDate },
+    ];
+    if (signupType) {
+      newContactFields.push({ key: "signup_type", field_value: signupType });
+      newContactFields.push({ key: "role", field_value: signupType });
+    }
+    if (companyCode) {
+      newContactFields.push({ key: "company_code", field_value: companyCode });
+    }
+    await ghlPut(contactId, { customFields: newContactFields });
 
     // Only create a pipeline Opportunity for genuinely NEW companies.
     // Team members joining an existing company via Company Code get a
