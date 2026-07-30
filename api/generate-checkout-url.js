@@ -117,8 +117,17 @@ export default async function handler(req, res) {
 
     const signature = generateCheckoutSignature(params, PAYFAST_PASSPHRASE);
 
-    const urlParams = new URLSearchParams({ ...params, signature });
-    const checkoutUrl = `https://www.payfast.co.za/eng/process?${urlParams.toString()}`;
+    // Built manually with phpStyleEncode (NOT URLSearchParams) so the
+    // submitted query string uses the exact same encoding as the signed
+    // string above — URLSearchParams encodes a couple of characters
+    // (like '*') differently than PHP's urlencode, which previously caused
+    // "signature does not match" errors on PayFast's side.
+    const allParams = { ...params, signature };
+    const checkoutUrl = `https://www.payfast.co.za/eng/process?${CHECKOUT_SIGNATURE_FIELD_ORDER
+      .filter((key) => allParams[key] !== undefined && allParams[key] !== null && allParams[key] !== '')
+      .map((key) => `${key}=${phpStyleEncode(allParams[key])}`)
+      .concat(`signature=${phpStyleEncode(allParams.signature)}`)
+      .join('&')}`;
 
     console.log(`✅ Generated signed checkout URL for ${ownerEmail}, tier ${tierCode}`);
 
@@ -133,13 +142,32 @@ export default async function handler(req, res) {
 // PayFast checkout signature: MD5 of params in CHECKOUT_SIGNATURE_FIELD_ORDER
 // (only fields that are actually present), URL-encoded with uppercase hex
 // escapes and spaces as '+', passphrase appended at the end, all lowercase.
+//
+// IMPORTANT: PayFast's server is PHP-based and encodes/re-checks using PHP's
+// urlencode(), which escapes a handful of characters that JS's
+// encodeURIComponent() does NOT escape by default: ( ) ! * '
+// If item_name or any other field contains these (e.g. "Tier 1 (Up to 3
+// team members)"), a plain encodeURIComponent produces a DIFFERENT string
+// than PayFast recomputes on their end, causing "signature does not match"
+// — even though the signature logic and field order are otherwise correct.
+// phpStyleEncode() below patches encodeURIComponent to match PHP exactly.
 // ---------------------------------------------------------------------------
+function phpStyleEncode(value) {
+  return encodeURIComponent(value)
+    .replace(/%20/g, '+')
+    .replace(/!/g, '%21')
+    .replace(/'/g, '%27')
+    .replace(/\(/g, '%28')
+    .replace(/\)/g, '%29')
+    .replace(/\*/g, '%2A');
+}
+
 function generateCheckoutSignature(params, passphrase) {
   const orderedPairs = CHECKOUT_SIGNATURE_FIELD_ORDER
     .filter((key) => params[key] !== undefined && params[key] !== null && params[key] !== '')
-    .map((key) => `${key}=${encodeURIComponent(params[key]).replace(/%20/g, '+')}`);
+    .map((key) => `${key}=${phpStyleEncode(params[key])}`);
 
-  orderedPairs.push(`passphrase=${encodeURIComponent(passphrase).replace(/%20/g, '+')}`);
+  orderedPairs.push(`passphrase=${phpStyleEncode(passphrase)}`);
 
   const signatureInput = orderedPairs.join('&');
 
