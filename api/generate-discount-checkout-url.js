@@ -53,7 +53,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    const { adminSecret, clientEmail, amount, description } = req.body;
+    const { adminSecret, clientEmail, amount, description, discountMonths, revertTier } = req.body;
 
     // --- Auth check: only someone with the admin secret can generate a
     // discount link. This is the ONLY thing standing between this endpoint
@@ -72,6 +72,47 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Amount must be a positive number (in Rands, e.g. 1322.00), under R100,000' });
     }
     const formattedAmount = amountNum.toFixed(2);
+
+    const VALID_REVERT_TIERS = ['tier_1', 'tier_2', 'tier_3'];
+    let discountNote = '';
+
+    // --- If a discount duration was set, find the client's existing GHL
+    // contact and write when the discount should end + what to revert to.
+    // The client must already exist in GHL (i.e. have signed up for a
+    // trial in the app) — this endpoint does NOT create new contacts.
+    if (discountMonths) {
+      const monthsNum = Number(discountMonths);
+      if (!monthsNum || monthsNum <= 0 || !Number.isInteger(monthsNum)) {
+        return res.status(400).json({ error: 'Discount months must be a whole number greater than 0' });
+      }
+      if (!revertTier || !VALID_REVERT_TIERS.includes(revertTier)) {
+        return res.status(400).json({ error: 'A valid revertTier (tier_1, tier_2, or tier_3) is required when discountMonths is set' });
+      }
+
+      const GHL_API_KEY = process.env.GHL_API_KEY;
+      const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
+
+      const contact = await findGHLContact(clientEmail, GHL_API_KEY, GHL_LOCATION_ID);
+      if (!contact) {
+        return res.status(404).json({
+          error: `No existing Azanco contact found for ${clientEmail}. They need to sign up for a trial in the app first, THEN you can generate a time-limited discount link for them.`,
+        });
+      }
+
+      const endDate = new Date();
+      endDate.setMonth(endDate.getMonth() + monthsNum);
+      const endDateStr = endDate.toISOString().split('T')[0]; // YYYY-MM-DD
+
+      await updateGHLContact(contact.id, {
+        discount_end_date: endDateStr,
+        discount_revert_tier: revertTier,
+      }, GHL_API_KEY);
+
+      discountNote = `Discount active for ${monthsNum} month${monthsNum !== 1 ? 's' : ''}, then auto-reverts to ${revertTier.replace('_', ' ')} pricing on ${endDateStr}.`;
+      console.log(`✅ Discount schedule set for ${clientEmail}: ends ${endDateStr}, reverts to ${revertTier}`);
+    } else {
+      discountNote = 'Indefinite discount — no automatic revert scheduled.';
+    }
 
     const PAYFAST_MERCHANT_ID = process.env.PAYFAST_MERCHANT_ID;
     const PAYFAST_MERCHANT_KEY = process.env.PAYFAST_MERCHANT_KEY;
@@ -110,7 +151,7 @@ export default async function handler(req, res) {
 
     console.log(`✅ Generated discount checkout URL for ${clientEmail} at R${formattedAmount}/month`);
 
-    return res.status(200).json({ url: checkoutUrl, amount: formattedAmount, clientEmail });
+    return res.status(200).json({ url: checkoutUrl, amount: formattedAmount, clientEmail, discountNote });
   } catch (err) {
     console.error('❌ generate-discount-checkout-url error:', err);
     return res.status(500).json({ error: 'Internal server error', details: err.message });
@@ -137,4 +178,55 @@ function generateCheckoutSignature(params, passphrase) {
   const signatureInput = orderedPairs.join('&');
 
   return crypto.createHash('md5').update(signatureInput).digest('hex').toLowerCase();
+}
+
+// ---------------------------------------------------------------------------
+// Helper: find GHL contact by email — same proven pattern as
+// cancel-subscription.js / sync-tier-to-payfast.js
+// ---------------------------------------------------------------------------
+async function findGHLContact(email, apiKey, locationId) {
+  const url = `https://services.leadconnectorhq.com/contacts/search/duplicate?locationId=${locationId}&email=${encodeURIComponent(email)}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Version: '2021-07-28',
+    },
+  });
+  if (!response.ok) {
+    console.error('GHL contact search failed:', await response.text());
+    return null;
+  }
+  const data = await response.json();
+  const found = data.contact;
+  if (!found) return null;
+  if (found.email?.toLowerCase() !== email.toLowerCase()) return null;
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: update GHL contact custom fields — GHL resolves key -> internal ID
+// correctly on PUT requests, so writing by key (not ID) is safe.
+// ---------------------------------------------------------------------------
+async function updateGHLContact(contactId, fieldsObj, apiKey) {
+  const customField = Object.entries(fieldsObj)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => ({ key, field_value: value }));
+
+  const response = await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Version: '2021-07-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ customFields: customField }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('GHL contact update failed:', errText);
+    throw new Error('Failed to update GHL contact');
+  }
+  return response.json();
 }
