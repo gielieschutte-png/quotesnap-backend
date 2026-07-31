@@ -84,6 +84,17 @@
   <label for="description">Description (optional, shows on their PayFast receipt)</label>
   <input type="text" id="description" placeholder="e.g. Marketing Partner Rate" />
 
+  <label for="discountMonths">Discount lasts how many months? (optional — leave blank for an indefinite discount)</label>
+  <input type="number" id="discountMonths" min="1" step="1" placeholder="e.g. 6" />
+
+  <label for="revertTier">After that, revert to which standard tier?</label>
+  <select id="revertTier" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #334155;background:#1e293b;color:white;font-size:15px;box-sizing:border-box;">
+    <option value="">— Not applicable (no revert) —</option>
+    <option value="tier_1">Tier 1 — R1,746/month</option>
+    <option value="tier_2">Tier 2 — R2,700/month</option>
+    <option value="tier_3">Tier 3 — R3,600/month</option>
+  </select>
+
   <button id="generateBtn" onclick="generateLink()">Generate Secure Link</button>
 
   <div id="error"></div>
@@ -103,9 +114,16 @@
       const clientEmail = document.getElementById('clientEmail').value.trim();
       const amount = document.getElementById('amount').value;
       const description = document.getElementById('description').value.trim();
+      const discountMonths = document.getElementById('discountMonths').value;
+      const revertTier = document.getElementById('revertTier').value;
 
       if (!adminSecret || !clientEmail || !amount) {
         errorDiv.textContent = 'Please fill in password, client email, and amount.';
+        errorDiv.classList.add('show');
+        return;
+      }
+      if (discountMonths && !revertTier) {
+        errorDiv.textContent = 'If you set a number of months, please also choose which tier to revert to.';
         errorDiv.classList.add('show');
         return;
       }
@@ -117,7 +135,7 @@
         const response = await fetch('https://quotesnap-backend-v2.vercel.app/api/generate-discount-checkout-url', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adminSecret, clientEmail, amount, description }),
+          body: JSON.stringify({ adminSecret, clientEmail, amount, description, discountMonths, revertTier }),
         });
         const data = await response.json();
 
@@ -129,6 +147,12 @@
 
         const titleEl = document.createElement('strong');
         titleEl.textContent = 'Link for ' + data.clientEmail + ' — R' + data.amount + '/month';
+
+        const noteEl = document.createElement('div');
+        noteEl.style.color = '#94a3b8';
+        noteEl.style.fontSize = '13px';
+        noteEl.style.marginTop = '4px';
+        noteEl.textContent = data.discountNote || '';
 
         const linkEl = document.createElement('a');
         linkEl.href = data.url;
@@ -143,6 +167,7 @@
 
         resultDiv.innerHTML = '';
         resultDiv.appendChild(titleEl);
+        resultDiv.appendChild(noteEl);
         resultDiv.appendChild(document.createElement('br'));
         resultDiv.appendChild(document.createElement('br'));
         resultDiv.appendChild(linkEl);
