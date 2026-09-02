@@ -50,6 +50,7 @@ export default async function handler(req, res) {
     console.log(`Matched contact: ${contact.id} for email: ${email}`);
 
     const customFields = contact.customFields || [];
+    console.log("RAW customFields:", JSON.stringify(customFields));
     let status = "trial";
     let tier = null;
     let trial_ends_at = null;
