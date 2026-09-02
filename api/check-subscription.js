@@ -8,7 +8,7 @@ const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 // across every contact in this GHL sub-account), so safe to hardcode here
 // the same way sync-tier-to-payfast.js and cancel-subscription.js do.
 const FIELD_IDS = {
-  trial_ends_at: "xLH9TyB1bAc5dBMEX2PD",
+  trial_end_at: "xLH9TyB1bAc5dBMEX2PD",
   next_billing_date: "d7T5YIxFSwX3wBs2gpDm",
 };
 
