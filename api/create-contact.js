@@ -245,7 +245,7 @@ export default async function handler(req, res) {
     // so support can see trial/subscription context for anyone.
     const newContactFields = [
       { key: "subscription_status", field_value: "trial" },
-      { key: "trial_ends_at", field_value: trialEndDate },
+      { key: "trial_end_at", field_value: trialEndDate },
     ];
     if (signupType) {
       newContactFields.push({ key: "signup_type", field_value: signupType });
