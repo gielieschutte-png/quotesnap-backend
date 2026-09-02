@@ -3,12 +3,14 @@
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 
-// Known GHL custom field IDs for the Azanco location — confirmed via debug
-// logging on 7-8 July 2026. These are location-wide (same field = same ID
-// across every contact in this GHL sub-account), so safe to hardcode here
-// the same way sync-tier-to-payfast.js and cancel-subscription.js do.
+// Known GHL custom field IDs for the Azanco location — re-confirmed via
+// debug logging on 2 September 2026 (the previous IDs on file were stale
+// and no longer matched the live fields). These are location-wide (same
+// field = same ID across every contact in this GHL sub-account), so safe
+// to hardcode here the same way sync-tier-to-payfast.js and
+// cancel-subscription.js do.
 const FIELD_IDS = {
-  trial_ends_at: "xLH9TyB1bAc5dBMEX2PD",
+  trial_ends_at: "i3SxnqhfoK0fEVGXrpYM",
   next_billing_date: "d7T5YIxFSwX3wBs2gpDm",
 };
 
@@ -48,13 +50,23 @@ export default async function handler(req, res) {
     }
 
     console.log(`Matched contact: ${contact.id} for email: ${email}`);
-
     const customFields = contact.customFields || [];
-    console.log("Field IDs and values:", customFields.map(f => `${f.id}=${JSON.stringify(f.value)}`).join(" | "));
+
     let status = "trial";
     let tier = null;
     let trial_ends_at = null;
     let next_billing_date = null;
+
+    // Converts a GHL date-picker field's raw value (returned as
+    // milliseconds-since-epoch, e.g. 1789516800000) into a "YYYY-MM-DD"
+    // string. Confirmed 2 Sept 2026: GHL does NOT return these as plain
+    // date strings, so the old regex-only check silently rejected every
+    // value.
+    function msToDateStr(rawVal) {
+      const ms = Number(rawVal);
+      if (isNaN(ms) || ms <= 0) return null;
+      return new Date(ms).toISOString().split("T")[0];
+    }
 
     for (const field of customFields) {
       const val = Array.isArray(field.value) ? field.value[0] : field.value;
@@ -80,13 +92,16 @@ export default async function handler(req, res) {
 
       // FIX: match date fields by their real GHL field ID, not by
       // "whichever one we saw first" — the old positional guess could
-      // easily assign next_billing_date's value to trial_ends_at or
-      // vice versa depending on array order.
-      if (field.id === FIELD_IDS.trial_ends_at && /^\d{4}-\d{2}-\d{2}$/.test(valStr)) {
-        trial_ends_at = valStr;
+      // easily assign next_billing_date's value to trial_ends_at or vice
+      // versa depending on array order. Values come back as ms timestamps,
+      // so convert via msToDateStr rather than expecting a date string.
+      if (field.id === FIELD_IDS.trial_ends_at) {
+        const d = msToDateStr(val);
+        if (d) trial_ends_at = d;
       }
-      if (field.id === FIELD_IDS.next_billing_date && /^\d{4}-\d{2}-\d{2}$/.test(valStr)) {
-        next_billing_date = valStr;
+      if (field.id === FIELD_IDS.next_billing_date) {
+        const d = msToDateStr(val);
+        if (d) next_billing_date = d;
       }
     }
 
