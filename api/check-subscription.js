@@ -51,6 +51,7 @@ export default async function handler(req, res) {
 
     console.log(`Matched contact: ${contact.id} for email: ${email}`);
     const customFields = contact.customFields || [];
+    console.log("ALL FIELDS:", customFields.map(f => `${f.id}=${JSON.stringify(f.value)}`).join(" | "));
 
     let status = "trial";
     let tier = null;
