@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>TEMP - Test Revert Endpoint</title>
+</head>
+<body style="font-family: sans-serif; max-width: 500px; margin: 40px auto; padding: 0 20px;">
+<h2>Test: revert-discount-price.js</h2>
+<p style="color:#900;">Internal test only — delete this file once you're done testing.</p>
+<label>Owner Email</label><br>
+<input id="email" style="width:100%;padding:8px;margin:6px 0;" value="support+test7@azanco.app"><br>
+<label>Revert Tier (fallback only)</label><br>
+<input id="tier" style="width:100%;padding:8px;margin:6px 0;" value="tier_1"><br>
+<button id="btn" style="padding:10px 20px;margin-top:10px;">Send Test Request</button>
+<pre id="result" style="background:#f4f4f4;padding:12px;margin-top:20px;white-space:pre-wrap;"></pre>
+<script>
+document.getElementById('btn').addEventListener('click', async () => {
+  const email = document.getElementById('email').value;
+  const tier = document.getElementById('tier').value;
+  document.getElementById('result').textContent = 'Sending...';
+  try {
+    const res = await fetch('https://quotesnap-backend-v2.vercel.app/api/revert-discount-price', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ownerEmail: email, revertTier: tier })
+    });
+    const data = await res.json();
+    document.getElementById('result').textContent = 'HTTP ' + res.status + '\n\n' + JSON.stringify(data, null, 2);
+  } catch (err) {
+    document.getElementById('result').textContent = 'Error: ' + err.message;
+  }
+});
+</script>
+</body>
+</html>
