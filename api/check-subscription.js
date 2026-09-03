@@ -3,16 +3,28 @@
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 
-// Known GHL custom field IDs for the Azanco location — re-confirmed via
-// debug logging on 2 September 2026 (the previous IDs on file were stale
-// and no longer matched the live fields). These are location-wide (same
-// field = same ID across every contact in this GHL sub-account), so safe
-// to hardcode here the same way sync-tier-to-payfast.js and
-// cancel-subscription.js do.
+// Known GHL custom field IDs for the Azanco location — confirmed via debug
+// logging (2 Sept 2026 for the date fields, 3 Sept 2026 for status/tier).
+//
+// FIX (3 Sept 2026): subscription_status and subscription_tier used to be
+// guessed by scanning EVERY custom field on the contact and matching
+// whichever one's VALUE happened to equal a known status/tier string. That's
+// the same landmine already hit and fixed elsewhere in this project
+// (revert-discount-price.js's tier lookup, cancel-subscription.js's token
+// lookup) — GHL's read API returns fields by ID, and matching by value
+// shape instead is fragile and can silently pick the wrong field. This is
+// very likely why editing subscription_status directly in GHL wasn't
+// reliably reflected in the banner. Now matched by explicit field ID, same
+// as the date fields below.
 const FIELD_IDS = {
   trial_ends_at: "i3SxnqhfoK0fEVGXrpYM",
   next_billing_date: "d7T5YIxFSwX3wBs2gpDm",
+  subscription_status: "W3QRXXKNG8Xus36NaPBx",
+  subscription_tier: "Tir7pwVADQwH6NaZ15oP",
 };
+
+const VALID_STATUSES = ["trial", "active", "grace", "locked", "cancelled"];
+const VALID_TIERS = ["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"];
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -37,9 +49,8 @@ export default async function handler(req, res) {
     const searchData = await searchRes.json();
     const contacts = searchData?.contacts || [];
 
-    // FIX: verify exact email match — GHL's query search can be fuzzy and
-    // return the wrong contact first. Every other Azanco endpoint already
-    // does this check; this one was missing it.
+    // Verify exact email match — GHL's query search can be fuzzy and
+    // return the wrong contact first.
     const contact = contacts.find(
       (c) => (c.email || "").toLowerCase() === email.toLowerCase()
     );
@@ -53,58 +64,40 @@ export default async function handler(req, res) {
     const customFields = contact.customFields || [];
     console.log("ALL FIELDS:", customFields.map(f => `${f.id}=${JSON.stringify(f.value)}`).join(" | "));
 
-    let status = "trial";
-    let tier = null;
-    let trial_ends_at = null;
-    let next_billing_date = null;
-
     // Converts a GHL date-picker field's raw value (returned as
-    // milliseconds-since-epoch, e.g. 1789516800000) into a "YYYY-MM-DD"
-    // string. Confirmed 2 Sept 2026: GHL does NOT return these as plain
-    // date strings, so the old regex-only check silently rejected every
-    // value.
+    // milliseconds-since-epoch) into a "YYYY-MM-DD" string.
     function msToDateStr(rawVal) {
       const ms = Number(rawVal);
       if (isNaN(ms) || ms <= 0) return null;
       return new Date(ms).toISOString().split("T")[0];
     }
 
-    for (const field of customFields) {
+    // Pull a field's raw value (unwrapping the array GHL uses for
+    // Dropdown-multiple fields), by exact field ID — not by guessing.
+    function getFieldValue(fieldId) {
+      const field = customFields.find((f) => f.id === fieldId);
+      if (!field) return null;
       const val = Array.isArray(field.value) ? field.value[0] : field.value;
-      if (!val) continue;
-      const valStr = String(val).trim();
-
-      // Match subscription status
-      if (["trial", "active", "grace", "locked", "cancelled"].includes(valStr)) {
-        status = valStr;
-      }
-
-      // Match tier
-      if (["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"].includes(valStr)) {
-        tier = valStr;
-      }
-      if (Array.isArray(field.value)) {
-        for (const v of field.value) {
-          if (["tier1", "tier_1", "tier2", "tier_2", "tier3", "tier_3"].includes(String(v).trim())) {
-            tier = String(v).trim();
-          }
-        }
-      }
-
-      // FIX: match date fields by their real GHL field ID, not by
-      // "whichever one we saw first" — the old positional guess could
-      // easily assign next_billing_date's value to trial_ends_at or vice
-      // versa depending on array order. Values come back as ms timestamps,
-      // so convert via msToDateStr rather than expecting a date string.
-      if (field.id === FIELD_IDS.trial_ends_at) {
-        const d = msToDateStr(val);
-        if (d) trial_ends_at = d;
-      }
-      if (field.id === FIELD_IDS.next_billing_date) {
-        const d = msToDateStr(val);
-        if (d) next_billing_date = d;
-      }
+      if (val === undefined || val === null || val === "") return null;
+      return String(val).trim();
     }
+
+    let status = "trial";
+    const rawStatus = getFieldValue(FIELD_IDS.subscription_status);
+    if (rawStatus && VALID_STATUSES.includes(rawStatus)) {
+      status = rawStatus;
+    } else if (rawStatus) {
+      console.warn(`subscription_status held an unrecognised value "${rawStatus}" — defaulting to "trial"`);
+    }
+
+    let tier = null;
+    const rawTier = getFieldValue(FIELD_IDS.subscription_tier);
+    if (rawTier && VALID_TIERS.includes(rawTier)) {
+      tier = rawTier;
+    }
+
+    const trial_ends_at = msToDateStr(getFieldValue(FIELD_IDS.trial_ends_at));
+    const next_billing_date = msToDateStr(getFieldValue(FIELD_IDS.next_billing_date));
 
     // Calculate days remaining
     let trial_days_remaining = null;
